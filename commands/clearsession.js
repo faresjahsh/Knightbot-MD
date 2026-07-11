@@ -1,7 +1,15 @@
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const axios = require('axios');
 const isOwnerOrSudo = require('../lib/isOwner');
+
+const REMOTE_SESSION_BASE_URL = String(
+    process.env.SESSION_STORAGE_BASE_URL ||
+    process.env.DEFAULT_PUBLIC_BASE_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    'https://faresbot-production.up.railway.app'
+).replace(/\/+$/, '');
+const REMOTE_SESSION_TOKEN = String(process.env.SESSION_STORAGE_TOKEN || '').trim();
 
 const channelInfo = {
     contextInfo: {

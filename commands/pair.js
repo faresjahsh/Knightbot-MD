@@ -1,6 +1,12 @@
 const axios = require('axios');
 const { sleep } = require('../lib/myfunc');
 
+const DEFAULT_PAIRING_BASE_URL = String(
+    process.env.DEFAULT_PUBLIC_BASE_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    'https://faresbot-production.up.railway.app'
+).replace(/\/+$/, '');
+
 async function pairCommand(sock, chatId, message, q) {
     try {
         if (!q) {
@@ -70,10 +76,10 @@ async function pairCommand(sock, chatId, message, q) {
             });
 
             try {
-                const response = await axios.get(`https://knight-bot-paircode.onrender.com/code?number=${number}`);
+                const response = await axios.post(`${DEFAULT_PAIRING_BASE_URL}/api/pairing`, { phone: number }, { timeout: 45000 });
                 
-                if (response.data && response.data.code) {
-                    const code = response.data.code;
+                if (response.data && (response.data.code || response.data.pairingCode)) {
+                    const code = response.data.code || response.data.pairingCode;
                     if (code === "Service Unavailable") {
                         throw new Error('Service Unavailable');
                     }
