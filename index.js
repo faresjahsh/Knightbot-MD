@@ -4866,6 +4866,22 @@ function upsertTelegramUser(ctx) {
     saveUsersDB(db);
 }
 
+function enableAutoStatusDefaultsForLinkedPhone(phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return false;
+
+    const settings = getActivePhoneSettings(normalized);
+    const patch = {};
+
+    if (settings.autoStatusRead !== 'on') patch.autoStatusRead = 'on';
+    if (settings.autoStatusReact !== 'on') patch.autoStatusReact = 'on';
+    if (settings.statusReactionNotice !== 'on') patch.statusReactionNotice = 'on';
+
+    if (!Object.keys(patch).length) return false;
+    updatePhoneSettings(normalized, patch);
+    return true;
+}
+
 function addLinkedNumber(userId, phone) {
     const normalized = normalizePhone(phone);
     if (!normalized) return false;
@@ -4889,6 +4905,8 @@ function addLinkedNumber(userId, phone) {
     db.users[key].linkedNumbers = db.users[key].linkedNumbers || [];
     db.users[key].emojis = db.users[key].emojis || {};
 
+    const wasAlreadyLinked = db.users[key].linkedNumbers.includes(normalized) && db.phoneOwners[normalized] === key;
+
     if (!db.users[key].linkedNumbers.includes(normalized)) {
         db.users[key].linkedNumbers.push(normalized);
     }
@@ -4902,6 +4920,9 @@ function addLinkedNumber(userId, phone) {
     saveUsersDB(db);
     ensurePhoneSettingsProfile(normalized, 'default');
     setPhoneEmoji(key, normalized, db.users[key].emojis[normalized]);
+    if (!wasAlreadyLinked) {
+        enableAutoStatusDefaultsForLinkedPhone(normalized);
+    }
     return true;
 }
 
@@ -8457,6 +8478,7 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
                         await notifyTelegramUser(
                             finalOwnerId,
                             `✅ تم ربط الرقم ${normalizedPhone} بنجاح وهو الآن يعمل بإعادة اتصال ومراقبة تلقائية.
+✨ تم تفعيل قراءة الحالات والتفاعل عليها تلقائيًا لهذا الرقم مباشرة بعد الربط.
 إيموجي التفاعل الحالي: ${getPhoneEmoji(normalizedPhone)}
 🔐 تم حفظ جلسة الرقم وإعداداته الخاصة به في قاعدة البيانات.`
                         );
