@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KnightBot MD | ربط رقم واتساب</title>
+  <style>
+    :root {
+      --bg-1: #0f172a;
+      --bg-2: #111827;
+      --card: rgba(17, 24, 39, 0.92);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #f8fafc;
+      --muted: #cbd5e1;
+      --accent: #22c55e;
+      --accent-2: #38bdf8;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Tahoma, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top right, rgba(56, 189, 248, 0.22), transparent 25%),
+        radial-gradient(circle at bottom left, rgba(34, 197, 94, 0.18), transparent 22%),
+        linear-gradient(135deg, var(--bg-1), var(--bg-2));
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: min(100%, 560px);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      padding: 28px;
+      backdrop-filter: blur(12px);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(34, 197, 94, 0.12);
+      color: #86efac;
+      border: 1px solid rgba(34, 197, 94, 0.25);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 13px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.3;
+    }
+
+    p {
+      color: var(--muted);
+      line-height: 1.9;
+      margin: 0 0 16px;
+    }
+
+    .box {
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 10px;
+      font-weight: bold;
+    }
+
+    input {
+      width: 100%;
+      padding: 15px 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text);
+      font-size: 16px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: rgba(56, 189, 248, 0.65);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+      border-radius: 14px;
+      padding: 14px 18px;
+      font-size: 15px;
+      font-weight: bold;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.65; cursor: wait; }
+
+    .primary {
+      background: linear-gradient(135deg, var(--accent), #16a34a);
+      color: #fff;
+      flex: 1;
+    }
+
+    .secondary {
+      background: rgba(56, 189, 248, 0.12);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.24);
+    }
+
+    .hidden { display: none; }
+
+    .status, .result, .error {
+      margin-top: 18px;
+      border-radius: 18px;
+      padding: 18px;
+      line-height: 1.9;
+    }
+
+    .status {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.18);
+      color: #bae6fd;
+    }
+
+    .result {
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.24);
+      color: #dcfce7;
+    }
+
+    .error {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      color: #fecaca;
+    }
+
+    .code {
+      margin-top: 10px;
+      padding: 18px;
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px dashed rgba(148, 163, 184, 0.35);
+      font-size: 28px;
+      letter-spacing: 4px;
+      text-align: center;
+      font-weight: bold;
+      direction: ltr;
+    }
+
+    ol {
+      margin: 12px 0 0;
+      padding-right: 18px;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: #94a3b8;
+      font-size: 13px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">✅ نظام اقتران جاهز</div>
+    <h1>ربط رقم واتساب مع KnightBot MD</h1>
+    <p>
+      أدخل رقم واتساب مع مفتاح الدولة بدون مسافات وبدون علامة + في البداية،
+      وسيصلك كود اقتران صحيح جاهز للنسخ والربط.
+    </p>
+
+    <section class="box">
+      <label for="number">رقم واتساب</label>
+      <input id="number" type="text" inputmode="numeric" autocomplete="off" placeholder="مثال: 9665XXXXXXXX" />
+      <div class="actions">
+        <button id="submitBtn" class="primary">استخراج كود الاقتران</button>
+        <button id="copyBtn" class="secondary hidden">نسخ الكود</button>
+      </div>
+    </section>
+
+    <section id="statusBox" class="status hidden"></section>
+    <section id="errorBox" class="error hidden"></section>
+    <section id="resultBox" class="result hidden">
+      <div>✅ تم إنشاء الكود بنجاح</div>
+      <div id="resultNumber"></div>
+      <div id="pairCode" class="code"></div>
+      <ol id="steps"></ol>
+    </section>
+
+    <div class="footer">إذا كان البوت مربوطًا مسبقًا، احذف session ثم أعد التشغيل لربط رقم جديد.</div>
+  </main>
+
+  <script>
+    const numberInput = document.getElementById('number');
+    const submitBtn = document.getElementById('submitBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const statusBox = document.getElementById('statusBox');
+    const errorBox = document.getElementById('errorBox');
+    const resultBox = document.getElementById('resultBox');
+    const pairCodeEl = document.getElementById('pairCode');
+    const resultNumberEl = document.getElementById('resultNumber');
+    const stepsEl = document.getElementById('steps');
+
+    function hide(el) { el.classList.add('hidden'); }
+    function show(el) { el.classList.remove('hidden'); }
+
+    function setLoading(loading) {
+      submitBtn.disabled = loading;
+      submitBtn.textContent = loading ? 'جاري إنشاء الكود...' : 'استخراج كود الاقتران';
+    }
+
+    function setStatus(message) {
+      statusBox.textContent = message;
+      show(statusBox);
+    }
+
+    function setError(message) {
+      errorBox.textContent = message;
+      show(errorBox);
+    }
+
+    function clearMessages() {
+      hide(statusBox);
+      hide(errorBox);
+      hide(resultBox);
+      hide(copyBtn);
+      statusBox.textContent = '';
+      errorBox.textContent = '';
+      pairCodeEl.textContent = '';
+      resultNumberEl.textContent = '';
+      stepsEl.innerHTML = '';
+    }
+
+    async function fetchPairCode() {
+      clearMessages();
+      const number = numberInput.value.trim();
+
+      if (!number) {
+        setError('أدخل رقم واتساب أولاً');
+        return;
+      }
+
+      setLoading(true);
+      setStatus('جاري إنشاء كود الاقتران، انتظر قليلًا...');
+
+      try {
+        const response = await fetch('/api/pair-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ number })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || 'فشل إنشاء الكود');
+        }
+
+        hide(statusBox);
+        resultNumberEl.textContent = `📱 الرقم: ${data.number}`;
+        pairCodeEl.textContent = data.code;
+        stepsEl.innerHTML = (data.instructions || []).map(step => `<li>${step}</li>`).join('');
+        show(resultBox);
+        show(copyBtn);
+      } catch (error) {
+        hide(statusBox);
+        setError(error.message || 'حدث خطأ غير متوقع');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    submitBtn.addEventListener('click', fetchPairCode);
+    numberInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') fetchPairCode();
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      const code = pairCodeEl.textContent.trim();
+      if (!code) return;
+
+      try {
+        await navigator.clipboard.writeText(code);
+        copyBtn.textContent = 'تم النسخ';
+        setTimeout(() => { copyBtn.textContent = 'نسخ الكود'; }, 1500);
+      } catch {
+        copyBtn.textContent = 'انسخ يدويًا';
+      }
+    });
+  </script>
+</body>
+</html>
