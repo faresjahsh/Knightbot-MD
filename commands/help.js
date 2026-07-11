@@ -3,12 +3,14 @@ const fs = require('fs');
 const path = require('path');
 
 async function helpCommand(sock, chatId, message) {
-    const channelLink = global.channelLink || 'https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v';
-    const helpMessage = `
+  const channelLink = global.channelLink || settings.channelLink || 'https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v';
+  const repoUrl = global.repoUrl || settings.repoUrl || 'https://github.com/faresjahsh/Knightbot-MD';
+
+  const helpMessage = `
 ╔═══════════════════╗
    *🤖 ${settings.botName || 'KnightBot-MD'}*
    الإصدار: *${settings.version || '3.0.0'}*
-   المطور: *${settings.botOwner || 'Mr Unique Hacker'}*
+   المطور: *${settings.botOwner || 'Professor'}*
 ╚═══════════════════╝
 
 *📜 قائمة الأوامر بالعربي:*
@@ -103,16 +105,6 @@ async function helpCommand(sock, chatId, message) {
 ╚═══════════════════╝
 
 ╔═══════════════════╗
-🖼️ *أوامر الصور الجاهزة*:
-║ ➤ .pies <دولة> — إرسال صورة حسب الدولة
-║ ➤ .china — صورة صينية جاهزة
-║ ➤ .indonesia — صورة إندونيسية جاهزة
-║ ➤ .japan — صورة يابانية جاهزة
-║ ➤ .korea — صورة كورية جاهزة
-║ ➤ .hijab — صورة حجاب جاهزة
-╚═══════════════════╝
-
-╔═══════════════════╗
 🎮 *أوامر الألعاب*:
 ║ ➤ .tictactoe @مستخدم — بدء لعبة إكس أو
 ║ ➤ .hangman — بدء لعبة الرجل المشنوق
@@ -125,48 +117,12 @@ async function helpCommand(sock, chatId, message) {
 
 ╔═══════════════════╗
 🤖 *أوامر الذكاء الاصطناعي*:
+║ ➤ .ai <سؤال> — سؤال الذكاء الاصطناعي بالعربي
 ║ ➤ .gpt <سؤال> — سؤال الذكاء الاصطناعي
 ║ ➤ .gemini <سؤال> — سؤال Gemini
 ║ ➤ .imagine <وصف> — توليد صورة بالذكاء الاصطناعي
 ║ ➤ .flux <وصف> — توليد صورة بأسلوب Flux
 ║ ➤ .sora <وصف> — توليد فيديو أو مشهد وصفي
-╚═══════════════════╝
-
-╔═══════════════════╗
-🎯 *الأوامر الترفيهية*:
-║ ➤ .compliment @مستخدم — إرسال مجاملة
-║ ➤ .insult @مستخدم — إرسال مزحة هجومية
-║ ➤ .flirt — إرسال كلام غزل
-║ ➤ .shayari — إرسال شِعر أو خواطر
-║ ➤ .goodnight — رسالة تصبح على خير
-║ ➤ .roseday — رسالة يوم الوردة
-║ ➤ .character @مستخدم — تحليل شخصية للمرح
-║ ➤ .wasted @مستخدم — تأثير wasted على الصورة
-║ ➤ .ship @مستخدم — نسبة توافق بين شخصين
-║ ➤ .simp @مستخدم — حكم طريف على المستخدم
-║ ➤ .stupid @مستخدم [نص] — رسالة مزاح للمستخدم
-╚═══════════════════╝
-
-╔═══════════════════╗
-🔤 *أوامر Textmaker*:
-║ ➤ .metallic <نص> — كتابة معدنية
-║ ➤ .ice <نص> — كتابة ثلجية
-║ ➤ .snow <نص> — كتابة بالثلج
-║ ➤ .impressive <نص> — كتابة مميزة
-║ ➤ .matrix <نص> — كتابة ستايل ماتريكس
-║ ➤ .light <نص> — كتابة مضيئة
-║ ➤ .neon <نص> — كتابة نيون
-║ ➤ .devil <نص> — كتابة ستايل ديفل
-║ ➤ .purple <نص> — كتابة بنفسجية
-║ ➤ .thunder <نص> — كتابة برق
-║ ➤ .leaves <نص> — كتابة بالأوراق
-║ ➤ .1917 <نص> — كتابة ستايل 1917
-║ ➤ .arena <نص> — كتابة أرينا
-║ ➤ .hacker <نص> — كتابة هاكر
-║ ➤ .sand <نص> — كتابة رملية
-║ ➤ .blackpink <نص> — كتابة Blackpink
-║ ➤ .glitch <نص> — كتابة جليتش
-║ ➤ .fire <نص> — كتابة نارية
 ╚═══════════════════╝
 
 ╔═══════════════════╗
@@ -176,41 +132,10 @@ async function helpCommand(sock, chatId, message) {
 ║ ➤ .spotify <بحث> — جلب نتيجة من سبوتيفاي
 ║ ➤ .instagram <رابط> — تنزيل من إنستغرام
 ║ ➤ .facebook <رابط> — تنزيل من فيسبوك
-║ ➤ .tiktok <رابط> — تنزيل من تيك توك
+║ ➤ .tiktok <رابط> — تنزيل من تيك توك بدون علامة مائية
 ║ ➤ .video <اسم> — تنزيل فيديو
 ║ ➤ .ytmp4 <رابط> — تنزيل فيديو يوتيوب
-╚═══════════════════╝
-
-╔═══════════════════╗
-🧩 *أوامر متنوعة*:
-║ ➤ .heart — تأثير قلب
-║ ➤ .horny — تأثير مرح
-║ ➤ .circle — تأثير دائري
-║ ➤ .lgbt — تأثير ألوان
-║ ➤ .lolice — تأثير مضحك
-║ ➤ .its-so-stupid — تأثير نصي
-║ ➤ .namecard — إنشاء بطاقة اسم
-║ ➤ .oogway — تصميم اقتباس
-║ ➤ .tweet — تصميم تغريدة
-║ ➤ .ytcomment — تصميم تعليق يوتيوب
-║ ➤ .comrade — تأثير رفيق
-║ ➤ .gay — تأثير مرح
-║ ➤ .glass — تأثير زجاجي
-║ ➤ .jail — تأثير السجن
-║ ➤ .passed — تأثير نجاح
-║ ➤ .triggered — تأثير Triggered
-╚═══════════════════╝
-
-╔═══════════════════╗
-🖼️ *أوامر الأنمي*:
-║ ➤ .nom — صورة أنمي أكل
-║ ➤ .poke — صورة أنمي نكز
-║ ➤ .cry — صورة أنمي بكاء
-║ ➤ .kiss — صورة أنمي قبلة
-║ ➤ .pat — صورة أنمي تربيت
-║ ➤ .hug — صورة أنمي حضن
-║ ➤ .wink — صورة أنمي غمزة
-║ ➤ .facepalm — صورة أنمي تعجب
+║ ➤ *مهم:* يمكنك أيضاً إرسال رابط تيك توك/إنستغرام/فيسبوك مباشرة وسيحاول البوت تنزيله تلقائياً.
 ╚═══════════════════╝
 
 ╔═══════════════════╗
@@ -221,46 +146,76 @@ async function helpCommand(sock, chatId, message) {
 ╚═══════════════════╝
 
 📢 *قناة واتساب الرسمية للتحديثات:*
-${channelLink}`;
+${channelLink}
 
-    try {
-        const imagePath = path.join(__dirname, '../assets/bot_image.jpg');
+🔗 *رابط المشروع:*
+${repoUrl}`;
 
-        if (fs.existsSync(imagePath)) {
-            const imageBuffer = fs.readFileSync(imagePath);
-
-            await sock.sendMessage(chatId, {
-                image: imageBuffer,
-                caption: helpMessage,
-                contextInfo: {
-                    forwardingScore: 1,
-                    isForwarded: true,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363161513685998@newsletter',
-                        newsletterName: 'KnightBot MD',
-                        serverMessageId: -1
-                    }
-                }
-            }, { quoted: message });
-        } else {
-            console.error('Bot image not found at:', imagePath);
-            await sock.sendMessage(chatId, {
-                text: helpMessage,
-                contextInfo: {
-                    forwardingScore: 1,
-                    isForwarded: true,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363161513685998@newsletter',
-                        newsletterName: 'KnightBot MD by Mr Unique Hacker',
-                        serverMessageId: -1
-                    }
-                }
-            });
+  try {
+    const imagePath = path.join(__dirname, '../assets/bot_image.jpg');
+    const hasImage = fs.existsSync(imagePath);
+    const payload = hasImage
+      ? {
+          image: fs.readFileSync(imagePath),
+          caption: helpMessage,
+          footer: 'اضغط الزر لفتح القناة مباشرة',
+          templateButtons: [
+            {
+              index: 1,
+              urlButton: {
+                displayText: 'عرض القناة',
+                url: channelLink
+              }
+            },
+            {
+              index: 2,
+              quickReplyButton: {
+                displayText: 'معلومات المالك',
+                id: 'owner'
+              }
+            }
+          ]
         }
-    } catch (error) {
-        console.error('Error in help command:', error);
-        await sock.sendMessage(chatId, { text: helpMessage });
+      : {
+          text: helpMessage,
+          footer: 'اضغط الزر لفتح القناة مباشرة',
+          templateButtons: [
+            {
+              index: 1,
+              urlButton: {
+                displayText: 'عرض القناة',
+                url: channelLink
+              }
+            },
+            {
+              index: 2,
+              quickReplyButton: {
+                displayText: 'معلومات المالك',
+                id: 'owner'
+              }
+            }
+          ]
+        };
+
+    await sock.sendMessage(chatId, payload, { quoted: message });
+  } catch (error) {
+    console.error('helpCommand send error:', error);
+    try {
+      const imagePath = path.join(__dirname, '../assets/bot_image.jpg');
+      if (fs.existsSync(imagePath)) {
+        await sock.sendMessage(chatId, {
+          image: fs.readFileSync(imagePath),
+          caption: `${helpMessage}\n\nاضغط هذا الرابط لفتح القناة:\n${channelLink}`
+        }, { quoted: message });
+      } else {
+        await sock.sendMessage(chatId, {
+          text: `${helpMessage}\n\nاضغط هذا الرابط لفتح القناة:\n${channelLink}`
+        }, { quoted: message });
+      }
+    } catch (fallbackError) {
+      console.error('helpCommand fallback error:', fallbackError);
     }
+  }
 }
 
 module.exports = helpCommand;
