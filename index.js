@@ -44,6 +44,9 @@ const { parsePhoneNumber } = require("libphonenumber-js")
 const { PHONENUMBER_MCC } = require('@whiskeysockets/baileys/lib/Utils/generics')
 const { rmSync, existsSync } = require('fs')
 const { join } = require('path')
+const { setSocket, setConnectionState } = require('./lib/pairingBridge')
+const { startTelegramPairBot } = require('./lib/telegramPairBot')
+const { startWebServer } = require('./lib/webServer')
 
 // Import lightweight store
 const store = require('./lib/lightweight_store')
@@ -70,7 +73,7 @@ setInterval(() => {
     }
 }, 30_000) // check every 30 seconds
 
-let phoneNumber = "911234567890"
+let phoneNumber = String(process.env.DEFAULT_PAIRING_NUMBER || '').replace(/[^0-9]/g, '')
 let owner = JSON.parse(fs.readFileSync('./data/owner.json'))
 
 global.botname = "KNIGHT BOT"
@@ -121,6 +124,7 @@ async function startXeonBotInc() {
 
         // Save credentials when they update
         XeonBotInc.ev.on('creds.update', saveCreds)
+        setSocket(XeonBotInc)
 
     store.bind(XeonBotInc.ev)
 
@@ -254,10 +258,12 @@ async function startXeonBotInc() {
         }
         
         if (connection === 'connecting') {
+            setConnectionState('connecting')
             console.log(chalk.yellow('🔄 Connecting to WhatsApp...'))
         }
         
         if (connection == "open") {
+            setConnectionState('open')
             console.log(chalk.magenta(` `))
             console.log(chalk.yellow(`🌿Connected to => ` + JSON.stringify(XeonBotInc.user, null, 2)))
 
@@ -291,6 +297,7 @@ async function startXeonBotInc() {
         }
         
         if (connection === 'close') {
+            setConnectionState('close')
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut
             const statusCode = lastDisconnect?.error?.output?.statusCode
             
@@ -379,6 +386,10 @@ async function startXeonBotInc() {
     }
 }
 
+
+// Start web and Telegram services before bot bootstrap
+startWebServer()
+startTelegramPairBot()
 
 // Start the bot with error handling
 startXeonBotInc().catch(error => {
