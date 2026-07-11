@@ -4,7 +4,8 @@ const { sleep } = require('../lib/myfunc');
 const DEFAULT_PAIRING_BASE_URL = String(
     process.env.DEFAULT_PUBLIC_BASE_URL ||
     process.env.PUBLIC_BASE_URL ||
-    'https://faresbot-production.up.railway.app'
+    process.env.APP_URL ||
+    `http://127.0.0.1:${process.env.PORT || 3000}`
 ).replace(/\/+$/, '');
 
 async function pairCommand(sock, chatId, message, q) {
