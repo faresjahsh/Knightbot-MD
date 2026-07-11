@@ -16,6 +16,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const {
+    dispatchLegacyMessage,
+    dispatchLegacyGroupParticipantsUpdate,
+    preloadLegacyProjectModules
+} = require('./lib/legacyCommandBridge');
 
 const LOG_THROTTLE_WINDOW_MS = Math.max(1000, Number(process.env.LOG_THROTTLE_WINDOW_MS || 10000));
 const LOG_THROTTLE_MAX_PER_SIGNATURE = Math.max(3, Number(process.env.LOG_THROTTLE_MAX_PER_SIGNATURE || 12));
@@ -109,7 +114,7 @@ function installConsoleRateLimiter() {
 }
 
 installConsoleRateLimiter();
-
+preloadLegacyProjectModules();
 
 const EMBEDDED_PAIR_CODE_BRIDGE = (() => {
     try {
@@ -8099,6 +8104,18 @@ async function handleIncomingMessage(sock, phoneNumber, msg) {
             return;
         }
 
+        const text = textFromMessage(msg);
+        const isGroup = from.endsWith('@g.us');
+
+        try {
+            await dispatchLegacyMessage(sock, phoneNumber, msg);
+            if (text.startsWith('.')) {
+                return;
+            }
+        } catch (legacyError) {
+            console.error(`Legacy Command Dispatch Error (${phoneNumber}):`, legacyError?.message || legacyError);
+        }
+
         if (msg.key?.fromMe) {
             incrementAnalytics('totalOwnerReplies');
             if (settings.ghostMode === 'on') {
@@ -8123,8 +8140,6 @@ async function handleIncomingMessage(sock, phoneNumber, msg) {
             await relayDirectContactMessageToTelegram(phoneNumber, from, msg);
         }
         await backupIncomingMessageForAntiDelete(sock, phoneNumber, msg);
-        const text = textFromMessage(msg);
-        const isGroup = from.endsWith('@g.us');
 
         if (!isGroup && settings.ghostMode === 'on' && msg.key) {
             rememberGhostPendingMessage(phoneNumber, msg);
@@ -8315,6 +8330,15 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
             }
         } catch (error) {
             console.error(`messages.update Error (${normalizedPhone}):`, error.message);
+        }
+    });
+
+    sock.ev.on('group-participants.update', async (update) => {
+        try {
+            touchClient(normalizedPhone);
+            await dispatchLegacyGroupParticipantsUpdate(sock, normalizedPhone, update);
+        } catch (error) {
+            console.error(`group-participants.update Error (${normalizedPhone}):`, error?.message || error);
         }
     });
 
