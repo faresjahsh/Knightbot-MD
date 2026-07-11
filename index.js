@@ -21,6 +21,14 @@ const {
     dispatchLegacyGroupParticipantsUpdate,
     preloadLegacyProjectModules
 } = require('./lib/legacyCommandBridge');
+const {
+    isRemoteSessionStoreEnabled,
+    listRemoteSessions,
+    fetchRemoteSession,
+    upsertRemoteSession,
+    deleteRemoteSession,
+    touchRemoteSession
+} = require('./lib/remoteSessionStore');
 
 const LOG_THROTTLE_WINDOW_MS = Math.max(1000, Number(process.env.LOG_THROTTLE_WINDOW_MS || 10000));
 const LOG_THROTTLE_MAX_PER_SIGNATURE = Math.max(3, Number(process.env.LOG_THROTTLE_MAX_PER_SIGNATURE || 12));
@@ -194,7 +202,7 @@ const EMBEDDED_PAIR_CODE_BRIDGE = (() => {
         const DEFAULT_SETTINGS = {
             current_emoji: String(process.env.CURRENT_EMOJI || "🔥"),
             auto_reply_enabled: parseBool(process.env.AUTO_REPLY_ENABLED || "true", true),
-            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || 'https://knightbot-md-production-f999.up.railway.app/api/pairing',
+            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || 'https://faresbot-production.up.railway.app/api/pairing',
             pair_code_api_method: String(process.env.PAIR_CODE_API_METHOD || process.env.PAIRING_API_METHOD || "POST").trim().toUpperCase() || "POST",
             pair_code_api_token: String(process.env.PAIR_CODE_API_TOKEN || process.env.PAIRING_API_TOKEN || "").trim(),
             pair_code_api_number_field: String(process.env.PAIR_CODE_API_NUMBER_FIELD || process.env.PAIRING_API_NUMBER_FIELD || "phone").trim() || "phone",
@@ -324,7 +332,7 @@ const DEFAULT_REACTION_EMOJI = '❤️';
 let reactionEmoji = DEFAULT_REACTION_EMOJI;
 const BRAND_NAME = 'Golden Queen Bot';
 const BRAND_IMAGE_TEXT = 'Golden Queen Bot';
-const DEFAULT_BOT_LINK = 'https://knightbot-md-production-f999.up.railway.app';
+const DEFAULT_BOT_LINK = 'https://faresbot-production.up.railway.app';
 const DEVELOPER_DISPLAY_NAME = '◥ ツفارس ツ ◤ ⁪⁬⁮⁮⁮ ⁪⁬⁮⁮⁮';
 const DEVELOPER_USERNAME = 'P_n_ij';
 const DEVELOPER_PROFILE_LINK = 'https://t.me/P_n_ij';
@@ -344,7 +352,7 @@ const MAX_WA_ABOUT_LENGTH = 139;
 const PROFILE_CUSTOM_MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const PHONE_SETTINGS_AUTH_TTL_MS = Number(process.env.PHONE_SETTINGS_AUTH_TTL_MS || 15 * 60 * 1000);
 const STATUS_RETENTION_MS = 24 * 60 * 60 * 1000;
-const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || 'https://knightbot-md-production-f999.up.railway.app').trim().replace(/\/+$/, '') || 'https://knightbot-md-production-f999.up.railway.app';
+const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || 'https://faresbot-production.up.railway.app').trim().replace(/\/+$/, '') || 'https://faresbot-production.up.railway.app';
 const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL).trim().replace(/\/+$/, '') || DEPLOYMENT_BASE_URL;
 const DEFAULT_SITE_INFO_TEXT = `🌐 الموقع الرسمي: ${DEPLOYMENT_BASE_URL}
 ⚙️ صفحة الإعدادات: ${DEPLOYMENT_BASE_URL}/settings
@@ -758,6 +766,7 @@ const STATUS_ARCHIVE_FILE = path.join(DATA_DIR, 'status-archive.json');
 const PROFILE_SCHEDULE_FILE = path.join(DATA_DIR, 'profile-schedules.json');
 const CONTACTS_ARCHIVE_FILE = path.join(DATA_DIR, 'contacts-archive.json');
 const DELETED_MESSAGES_ARCHIVE_FILE = path.join(DATA_DIR, 'deleted-messages-archive.json');
+const SESSION_STORE_FILE = path.join(DATA_DIR, 'session-store.json');
 const DEFAULT_ADMINS = Array.from(
     new Set(
         [...BUILTIN_ADMIN_IDS, ...(process.env.ADMIN_IDS || '').split(',')]
@@ -1317,10 +1326,19 @@ async function listLocalSessionEntries() {
 }
 
 async function persistMongoSessionStateDirect(phone, creds, keysData, metadata = {}) {
-    writeLocalSessionMeta(phone, {
-        ownerId: metadata.ownerId || '',
-        registered: metadata.registered === true || creds?.registered === true,
-        lastConnectedAt: metadata.lastConnectedAt || null
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return false;
+    const registered = metadata.registered === true || creds?.registered === true;
+    const lastConnectedAt = metadata.lastConnectedAt || null;
+    writeLocalSessionMeta(normalizedPhone, {
+        ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
+        registered,
+        lastConnectedAt
+    });
+    await syncSessionToRemoteStore(normalizedPhone, {
+        ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
+        registered,
+        lastConnectedAt
     });
     return true;
 }
@@ -1328,11 +1346,31 @@ async function persistMongoSessionStateDirect(phone, creds, keysData, metadata =
 async function touchMongoSessionState(phone, metadata = {}) {
     const normalizedPhone = typeof normalizePhone === 'function' ? normalizePhone(phone) : String(phone || '').replace(/\D/g, '');
     if (!normalizedPhone) return false;
-    writeLocalSessionMeta(normalizedPhone, {
+    const payload = {
         ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
         registered: metadata.registered === true,
         lastConnectedAt: metadata.lastConnectedAt || null
-    });
+    };
+    writeLocalSessionMeta(normalizedPhone, payload);
+
+    const store = getSessionStoreDB();
+    const current = normalizeSessionStoreRecord(normalizedPhone, store.sessions?.[normalizedPhone] || {}) || normalizeSessionStoreRecord(normalizedPhone, {});
+    store.sessions[normalizedPhone] = {
+        ...current,
+        ownerId: payload.ownerId,
+        registered: payload.registered || current?.registered === true,
+        lastConnectedAt: payload.lastConnectedAt || current?.lastConnectedAt || null,
+        updatedAt: new Date().toISOString()
+    };
+    saveSessionStoreDB(store);
+
+    if (isRemoteSessionStoreEnabled()) {
+        try {
+            await touchRemoteSession(normalizedPhone, store.sessions[normalizedPhone]);
+        } catch (error) {
+            console.error(`Remote Session Touch Error (${normalizedPhone}):`, error.message || error);
+        }
+    }
     return true;
 }
 
@@ -1343,21 +1381,33 @@ async function deleteMongoSessionState(phone) {
     const sessionDir = getSessionStorageDir(sessionKey);
     try {
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        return true;
     } catch (error) {
         console.error(`⚠️ تعذر حذف الجلسة المحلية ${sessionKey}:`, error.message || error);
-        return false;
     }
+
+    deleteSessionStoreRecordLocal(sessionKey);
+
+    if (normalizedPhone && isRemoteSessionStoreEnabled()) {
+        try {
+            await deleteRemoteSession(normalizedPhone);
+        } catch (error) {
+            console.error(`⚠️ تعذر حذف الجلسة البعيدة ${normalizedPhone}:`, error.message || error);
+        }
+    }
+
+    return true;
 }
 
 async function updateMongoSessionMetadataOnly(phone, metadata = {}) {
     const normalizedPhone = typeof normalizePhone === 'function' ? normalizePhone(phone) : String(phone || '').replace(/\D/g, '');
     if (!normalizedPhone) return false;
-    writeLocalSessionMeta(normalizedPhone, {
+    const payload = {
         ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
         registered: metadata.registered === true,
         ...(metadata.lastConnectedAt ? { lastConnectedAt: metadata.lastConnectedAt } : {})
-    });
+    };
+    writeLocalSessionMeta(normalizedPhone, payload);
+    await touchMongoSessionState(normalizedPhone, payload);
     return true;
 }
 
@@ -1379,6 +1429,57 @@ function extractSessionIdFromMongoDocument(doc = {}) {
 }
 
 async function getStoredMongoSessionEntries() {
+    if (isRemoteSessionStoreEnabled()) {
+        try {
+            const sessions = await listRemoteSessions();
+            if (Array.isArray(sessions) && sessions.length) {
+                const normalized = sessions
+                    .map((entry) => normalizeSessionStoreRecord(entry?.phone || entry?.sessionId || '', entry || {}))
+                    .filter(Boolean)
+                    .map((entry) => ({
+                        sessionId: entry.phone,
+                        phone: entry.phone,
+                        ownerId: String(entry.ownerId || '').trim(),
+                        registered: entry.registered === true,
+                        lastConnectedAt: entry.lastConnectedAt || entry.updatedAt || null
+                    }));
+
+                if (normalized.length) {
+                    const store = getSessionStoreDB();
+                    for (const entry of normalized) {
+                        const current = normalizeSessionStoreRecord(entry.phone, store.sessions?.[entry.phone] || {}) || normalizeSessionStoreRecord(entry.phone, {});
+                        store.sessions[entry.phone] = {
+                            ...current,
+                            ownerId: entry.ownerId,
+                            registered: entry.registered,
+                            lastConnectedAt: entry.lastConnectedAt || current?.lastConnectedAt || null,
+                            updatedAt: new Date().toISOString()
+                        };
+                    }
+                    saveSessionStoreDB(store);
+                    return normalized;
+                }
+            }
+        } catch (error) {
+            console.error('Remote Session List Warning:', error.message || error);
+        }
+    }
+
+    const storeEntries = Object.values(getSessionStoreDB().sessions || {})
+        .map((entry) => normalizeSessionStoreRecord(entry?.phone || entry?.sessionId || '', entry || {}))
+        .filter(Boolean)
+        .map((entry) => ({
+            sessionId: entry.phone,
+            phone: entry.phone,
+            ownerId: entry.ownerId,
+            registered: entry.registered === true,
+            lastConnectedAt: entry.lastConnectedAt || entry.updatedAt || null
+        }));
+
+    if (storeEntries.length) {
+        return storeEntries;
+    }
+
     return listLocalSessionEntries();
 }
 
@@ -1388,17 +1489,30 @@ async function getMongoAuthState(phone) {
     const sessionDir = getSessionStorageDir(sessionKey);
     ensureDir(sessionDir);
 
+    if (normalizedPhone && !sessionHasLocalAuthFiles(normalizedPhone)) {
+        await restoreSessionFromRemoteStore(normalizedPhone);
+    }
+
     const helperAuth = await useMultiFileAuthState(sessionDir);
     const state = helperAuth.state;
 
     const saveCreds = async (metadata = {}) => {
+        const registered = metadata.registered === true || state?.creds?.registered === true;
+        const payload = {
+            ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
+            registered,
+            lastConnectedAt: metadata.lastConnectedAt || null
+        };
+
         await helperAuth.saveCreds();
         writeLocalSessionMeta(sessionKey, {
             phone: normalizedPhone || sessionKey,
-            ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
-            registered: metadata.registered === true || state?.creds?.registered === true,
-            lastConnectedAt: metadata.lastConnectedAt || null
+            ownerId: payload.ownerId,
+            registered,
+            lastConnectedAt: payload.lastConnectedAt
         });
+
+        await syncSessionToRemoteStore(normalizedPhone || sessionKey, payload);
     };
 
     return { state, saveCreds };
@@ -1452,6 +1566,181 @@ function writeJSON(filePath, data) {
     const cloned = cloneJsonValue(data);
     JSON_MIRROR_CACHE.set(pathKey, cloned);
     writeJsonFileToDisk(filePath, cloned);
+}
+
+function getDefaultSessionStoreDB() {
+    return { sessions: {} };
+}
+
+function getSessionStoreDB() {
+    const db = readJSON(SESSION_STORE_FILE, getDefaultSessionStoreDB());
+    db.sessions = db.sessions || {};
+    return db;
+}
+
+function saveSessionStoreDB(db) {
+    db.sessions = db.sessions || {};
+    writeJSON(SESSION_STORE_FILE, db);
+    return db;
+}
+
+function normalizeSessionStoreRecord(phone, payload = {}) {
+    const normalizedPhone = normalizePhone(phone || payload.phone || payload.sessionId || '');
+    if (!normalizedPhone) return null;
+
+    const files = {};
+    for (const [fileName, rawContent] of Object.entries(payload.files || {})) {
+        const safeName = path.basename(String(fileName || '').trim());
+        if (!safeName || !safeName.endsWith('.json')) continue;
+        if (typeof rawContent !== 'string') continue;
+        files[safeName] = rawContent;
+    }
+
+    return {
+        phone: normalizedPhone,
+        sessionId: normalizedPhone,
+        ownerId: String(payload.ownerId || '').trim(),
+        registered: payload.registered === true,
+        lastConnectedAt: payload.lastConnectedAt || null,
+        updatedAt: payload.updatedAt || new Date().toISOString(),
+        files,
+        fileCount: Object.keys(files).length
+    };
+}
+
+function listLocalSessionJsonFiles(phone = '') {
+    const sessionDir = getSessionStorageDir(phone);
+    if (!fs.existsSync(sessionDir)) return [];
+    try {
+        return fs.readdirSync(sessionDir)
+            .filter((fileName) => fileName && fileName.endsWith('.json'))
+            .sort();
+    } catch (_) {
+        return [];
+    }
+}
+
+function sessionHasLocalAuthFiles(phone = '') {
+    return listLocalSessionJsonFiles(phone).some((fileName) => fileName === 'creds.json' || fileName.startsWith('app-state-sync-') || fileName.startsWith('pre-key-') || fileName.startsWith('sender-key-') || fileName.startsWith('session-'));
+}
+
+function collectSessionDirectorySnapshot(phone = '', metadata = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return null;
+
+    const sessionDir = getSessionStorageDir(normalizedPhone);
+    ensureDir(sessionDir);
+    const files = {};
+
+    for (const fileName of listLocalSessionJsonFiles(normalizedPhone)) {
+        const filePath = path.join(sessionDir, fileName);
+        try {
+            files[fileName] = fs.readFileSync(filePath, 'utf8');
+        } catch (error) {
+            console.error(`Session Snapshot Read Error (${normalizedPhone}/${fileName}):`, error.message || error);
+        }
+    }
+
+    return normalizeSessionStoreRecord(normalizedPhone, {
+        ownerId: metadata.ownerId || getPhoneOwner?.(normalizedPhone) || '',
+        registered: metadata.registered === true,
+        lastConnectedAt: metadata.lastConnectedAt || null,
+        files
+    });
+}
+
+function writeSessionDirectorySnapshot(phone = '', payload = {}) {
+    const record = normalizeSessionStoreRecord(phone, payload);
+    if (!record) return false;
+
+    const sessionDir = getSessionStorageDir(record.phone);
+    ensureDir(sessionDir);
+
+    const allowedFiles = new Set(Object.keys(record.files || {}));
+    for (const existingFile of listLocalSessionJsonFiles(record.phone)) {
+        if (!allowedFiles.has(existingFile)) {
+            try {
+                fs.unlinkSync(path.join(sessionDir, existingFile));
+            } catch (_) {}
+        }
+    }
+
+    for (const [fileName, content] of Object.entries(record.files || {})) {
+        fs.writeFileSync(path.join(sessionDir, fileName), String(content || ''), 'utf8');
+    }
+
+    writeLocalSessionMeta(record.phone, {
+        ownerId: record.ownerId || getPhoneOwner?.(record.phone) || '',
+        registered: record.registered === true,
+        lastConnectedAt: record.lastConnectedAt || null
+    });
+
+    const store = getSessionStoreDB();
+    store.sessions[record.phone] = record;
+    saveSessionStoreDB(store);
+    return true;
+}
+
+function deleteSessionStoreRecordLocal(phone = '') {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return false;
+    const store = getSessionStoreDB();
+    if (!store.sessions[normalizedPhone]) return false;
+    delete store.sessions[normalizedPhone];
+    saveSessionStoreDB(store);
+    return true;
+}
+
+async function restoreSessionFromRemoteStore(phone = '') {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return false;
+
+    const store = getSessionStoreDB();
+    const localRecord = normalizeSessionStoreRecord(normalizedPhone, store.sessions?.[normalizedPhone] || {});
+    if (localRecord && Object.keys(localRecord.files || {}).length) {
+        writeSessionDirectorySnapshot(normalizedPhone, localRecord);
+        return true;
+    }
+
+    if (!isRemoteSessionStoreEnabled()) return false;
+
+    try {
+        const remoteRecord = await fetchRemoteSession(normalizedPhone);
+        const normalizedRecord = normalizeSessionStoreRecord(normalizedPhone, remoteRecord || {});
+        if (!normalizedRecord || !Object.keys(normalizedRecord.files || {}).length) return false;
+        writeSessionDirectorySnapshot(normalizedPhone, normalizedRecord);
+        return true;
+    } catch (error) {
+        console.error(`Remote Session Restore Error (${normalizedPhone}):`, error.message || error);
+        return false;
+    }
+}
+
+async function syncSessionToRemoteStore(phone = '', metadata = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return false;
+
+    const snapshot = collectSessionDirectorySnapshot(normalizedPhone, metadata);
+    if (!snapshot) return false;
+
+    snapshot.ownerId = String(metadata.ownerId || snapshot.ownerId || getPhoneOwner?.(normalizedPhone) || '').trim();
+    snapshot.registered = metadata.registered === true || snapshot.registered === true;
+    snapshot.lastConnectedAt = metadata.lastConnectedAt || snapshot.lastConnectedAt || null;
+    snapshot.updatedAt = new Date().toISOString();
+
+    const store = getSessionStoreDB();
+    store.sessions[normalizedPhone] = snapshot;
+    saveSessionStoreDB(store);
+
+    if (!isRemoteSessionStoreEnabled()) return true;
+
+    try {
+        await upsertRemoteSession(normalizedPhone, snapshot);
+        return true;
+    } catch (error) {
+        console.error(`Remote Session Sync Error (${normalizedPhone}):`, error.message || error);
+        return false;
+    }
 }
 
 function removeDirRecursive(dirPath) {
@@ -1544,6 +1833,7 @@ function bootStorage() {
     ensureFile(PROFILE_SCHEDULE_FILE, { phones: {} });
     ensureFile(CONTACTS_ARCHIVE_FILE, { phones: {} });
     ensureFile(DELETED_MESSAGES_ARCHIVE_FILE, { items: {} });
+    ensureFile(SESSION_STORE_FILE, { sessions: {} });
 }
 
 bootStorage();
@@ -2671,8 +2961,8 @@ function formatPairingApiAdminMessage() {
         'أوامر المطور:',
         '/pairapi',
         '/paircode 967771234567',
-        '/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone',
-        '/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone YOUR_TOKEN',
+        '/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone',
+        '/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone YOUR_TOKEN',
         '/setpairapi reset'
     ].join('\n');
 }
@@ -11145,9 +11435,9 @@ function buildUnifiedSettingsHubHTML() {
       <div class="card">
         <div class="row">
           <div><div class="title">إعدادات Contact Save</div><div class="sub">كل إعدادات حفظ جهات الاتصال التلقائي مضافة داخل هذه اللوحة</div></div>
-          <div class="btns"><a class="btn primary" href="https://knightbot-md-production-f999.up.railway.app/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
+          <div class="btns"><a class="btn primary" href="https://faresbot-production.up.railway.app/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
         </div>
-        <iframe class="frame" src="https://knightbot-md-production-f999.up.railway.app/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        <iframe class="frame" src="https://faresbot-production.up.railway.app/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
         <div class="note">إذا لم يظهر القسم الخارجي داخل الصفحة بسبب قيود المتصفح أو الموقع، استخدم زر فتح Contact Save مباشرة.</div>
       </div>
     </section>
@@ -11239,6 +11529,111 @@ app.post('/minibot/api/image/upload', (req, res) => {
     }
 });
 
+
+function readSessionStoreApiTokenFromRequest(req) {
+    return String(
+        req.headers['x-session-store-token'] ||
+        req.headers['x-api-key'] ||
+        req.headers.authorization?.replace(/^Bearer\s+/i, '') ||
+        req.query?.token ||
+        req.body?.token ||
+        ''
+    ).trim();
+}
+
+function isSessionStoreApiAuthorized(req) {
+    const expected = String(process.env.SESSION_STORAGE_TOKEN || '').trim();
+    if (!expected) return true;
+    return readSessionStoreApiTokenFromRequest(req) === expected;
+}
+
+function requireSessionStoreApiAuth(req, res) {
+    if (isSessionStoreApiAuthorized(req)) return true;
+    res.status(401).json({ success: false, error: 'Unauthorized session-store request' });
+    return false;
+}
+
+app.get('/api/session-store/list', async (req, res) => {
+    try {
+        if (!requireSessionStoreApiAuth(req, res)) return;
+        const sessions = Object.values(getSessionStoreDB().sessions || {})
+            .map((entry) => normalizeSessionStoreRecord(entry?.phone || entry?.sessionId || '', entry || {}))
+            .filter(Boolean)
+            .map((entry) => ({
+                phone: entry.phone,
+                sessionId: entry.phone,
+                ownerId: entry.ownerId,
+                registered: entry.registered === true,
+                lastConnectedAt: entry.lastConnectedAt || null,
+                updatedAt: entry.updatedAt || null,
+                fileCount: Number(entry.fileCount || Object.keys(entry.files || {}).length || 0)
+            }));
+        return res.json({ success: true, sessions });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message || 'Failed to list sessions' });
+    }
+});
+
+app.get('/api/session-store/:phone', async (req, res) => {
+    try {
+        if (!requireSessionStoreApiAuth(req, res)) return;
+        const phone = normalizePhone(req.params?.phone || '');
+        if (!phone) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+        const record = normalizeSessionStoreRecord(phone, getSessionStoreDB().sessions?.[phone] || {});
+        if (!record) return res.status(404).json({ success: false, error: 'Session not found' });
+        return res.json({ success: true, session: record });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message || 'Failed to load session' });
+    }
+});
+
+app.put('/api/session-store/:phone', async (req, res) => {
+    try {
+        if (!requireSessionStoreApiAuth(req, res)) return;
+        const phone = normalizePhone(req.params?.phone || req.body?.phone || '');
+        if (!phone) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+        const record = normalizeSessionStoreRecord(phone, req.body?.session || req.body || {});
+        if (!record) return res.status(400).json({ success: false, error: 'Invalid session payload' });
+        const store = getSessionStoreDB();
+        store.sessions[phone] = record;
+        saveSessionStoreDB(store);
+        return res.json({ success: true, session: { phone: record.phone, ownerId: record.ownerId, registered: record.registered, lastConnectedAt: record.lastConnectedAt, updatedAt: record.updatedAt, fileCount: Number(record.fileCount || Object.keys(record.files || {}).length || 0) } });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message || 'Failed to save session' });
+    }
+});
+
+app.post('/api/session-store/:phone/touch', async (req, res) => {
+    try {
+        if (!requireSessionStoreApiAuth(req, res)) return;
+        const phone = normalizePhone(req.params?.phone || req.body?.phone || '');
+        if (!phone) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+        const store = getSessionStoreDB();
+        const current = normalizeSessionStoreRecord(phone, store.sessions?.[phone] || {}) || normalizeSessionStoreRecord(phone, {});
+        if (!current) return res.status(404).json({ success: false, error: 'Session not found' });
+        current.ownerId = String(req.body?.ownerId || current.ownerId || '').trim();
+        current.registered = req.body?.registered === true || current.registered === true;
+        current.lastConnectedAt = req.body?.lastConnectedAt || current.lastConnectedAt || null;
+        current.updatedAt = new Date().toISOString();
+        store.sessions[phone] = current;
+        saveSessionStoreDB(store);
+        return res.json({ success: true, session: { phone: current.phone, ownerId: current.ownerId, registered: current.registered, lastConnectedAt: current.lastConnectedAt, updatedAt: current.updatedAt, fileCount: Number(current.fileCount || Object.keys(current.files || {}).length || 0) } });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message || 'Failed to update session metadata' });
+    }
+});
+
+app.delete('/api/session-store/:phone', async (req, res) => {
+    try {
+        if (!requireSessionStoreApiAuth(req, res)) return;
+        const phone = normalizePhone(req.params?.phone || '');
+        if (!phone) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+        const deleted = deleteSessionStoreRecordLocal(phone);
+        return res.json({ success: true, deleted, phone });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message || 'Failed to delete session' });
+    }
+});
 
 app.post('/api/login', (req, res) => {
     try {
@@ -11343,7 +11738,7 @@ bot.command('setpairapi', async (ctx) => {
     const raw = String(ctx.message?.text || '').trim();
     const parts = raw.split(/\s+/).filter(Boolean).slice(1);
     if (!parts.length) {
-        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone\nأو\n/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
+        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone\nأو\n/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
     }
     if (/^(?:reset|default|افتراضي)$/i.test(parts[0])) {
         saveGlobalAdminSetting({
@@ -11929,6 +12324,9 @@ const server = app.listen(APP_PORT, async () => {
         console.error('Status media migration warning:', error.message || error);
     });
     await resetRuntimePhoneDataOnBoot();
+    await getStoredMongoSessionEntries().catch((error) => {
+        console.error('Session store preload warning:', error.message || error);
+    });
     markAnalyticsBoot();
 
     let telegramStatus = { enabled: false, mode: 'disabled' };
@@ -14553,7 +14951,7 @@ function decodeMergedPythonSource() {
 
 const PythonMergedLayer = (() => {
     const DEFAULT_START_MESSAGE_TEMPLATE = "{emoji}";
-    const DEFAULT_AUTO_REPLY_CHANNEL_URL = "https://knightbot-md-production-f999.up.railway.app";
+    const DEFAULT_AUTO_REPLY_CHANNEL_URL = "https://faresbot-production.up.railway.app";
     const DEFAULT_CONTACT_NUMBER = "967784355543";
     const DEFAULT_SITE_BRAND_NAME = "Golden Queen Bot";
     const DEFAULT_SITE_FOOTER = "Golden Queen Bot";
@@ -14566,7 +14964,7 @@ const PythonMergedLayer = (() => {
     const PASSWORD_DISCOVERY_COMMAND = ".settings";
     const PASSWORD_DISCOVERY_ATTEMPT_DELAYS = Object.freeze([15, 45, 60]);
     const PASSWORD_DISCOVERY_RESPONSE_WAIT_SECONDS = 12;
-    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || "https://knightbot-md-production-f999.up.railway.app").trim().replace(/\/+$/, "") || "https://knightbot-md-production-f999.up.railway.app";
+    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || "https://faresbot-production.up.railway.app").trim().replace(/\/+$/, "") || "https://faresbot-production.up.railway.app";
     const TARGET_SETTINGS_PAGE_URL = `${TARGET_SITE_BASE_URL}/settings`;
     const IMMUTABLE_SITE_SETTINGS_KEYS = new Set(["__v", "_id", "app", "createdAt", "id", "num", "updatedAt"]);
     const ARABIC_DIGIT_SOURCE = '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹';
