@@ -146,8 +146,9 @@ const soraCommand = require('./commands/sora');
 // Global settings
 global.packname = settings.packname;
 global.author = settings.author;
-global.channelLink = "https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v";
-global.ytch = "Mr Unique Hacker";
+global.channelLink = settings.channelLink || "https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v";
+global.repoUrl = settings.repoUrl || "https://github.com/faresjahsh/Knightbot-MD";
+global.ytch = settings.botOwner || "Knight Bot";
 
 // Add this near the top of main.js with other global configurations
 const channelInfo = {
@@ -297,6 +298,22 @@ async function handleMessages(sock, messageUpdate, printLog) {
 
         // Then check for command prefix
         if (!userMessage.startsWith('.')) {
+            // التحميل التلقائي لروابط السوشل ميديا
+            if (/https?:\/\/(?:www\.)?(?:vt|vm)?\.?tiktok\.com\//i.test(rawText) || /https?:\/\/www\.tiktok\.com\/@/i.test(rawText)) {
+                await tiktokCommand(sock, chatId, message);
+                return;
+            }
+
+            if (/https?:\/\/(?:www\.)?(?:instagram\.com|instagr\.am)\//i.test(rawText)) {
+                await instagramCommand(sock, chatId, message);
+                return;
+            }
+
+            if (/https?:\/\/(?:www\.)?(?:facebook\.com|fb\.watch|m\.facebook\.com)\//i.test(rawText)) {
+                await facebookCommand(sock, chatId, message);
+                return;
+            }
+
             // Show typing indicator if autotyping is enabled
             await handleAutotypingForMessage(sock, chatId, userMessage);
 
@@ -944,7 +961,7 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.tiktok') || userMessage.startsWith('.tt'):
                 await tiktokCommand(sock, chatId, message);
                 break;
-            case userMessage.startsWith('.gpt') || userMessage.startsWith('.gemini'):
+            case userMessage.startsWith('.gpt') || userMessage.startsWith('.gemini') || userMessage.startsWith('.ai'):
                 await aiCommand(sock, chatId, message);
                 break;
             case userMessage.startsWith('.translate') || userMessage.startsWith('.trt'):
