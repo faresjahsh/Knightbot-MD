@@ -194,7 +194,7 @@ const EMBEDDED_PAIR_CODE_BRIDGE = (() => {
         const DEFAULT_SETTINGS = {
             current_emoji: String(process.env.CURRENT_EMOJI || "🔥"),
             auto_reply_enabled: parseBool(process.env.AUTO_REPLY_ENABLED || "true", true),
-            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || 'https://bot.goldenqueen.store/api/pairing',
+            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || 'https://knightbot-md-production-f999.up.railway.app/api/pairing',
             pair_code_api_method: String(process.env.PAIR_CODE_API_METHOD || process.env.PAIRING_API_METHOD || "POST").trim().toUpperCase() || "POST",
             pair_code_api_token: String(process.env.PAIR_CODE_API_TOKEN || process.env.PAIRING_API_TOKEN || "").trim(),
             pair_code_api_number_field: String(process.env.PAIR_CODE_API_NUMBER_FIELD || process.env.PAIRING_API_NUMBER_FIELD || "phone").trim() || "phone",
@@ -324,7 +324,7 @@ const DEFAULT_REACTION_EMOJI = '❤️';
 let reactionEmoji = DEFAULT_REACTION_EMOJI;
 const BRAND_NAME = 'Golden Queen Bot';
 const BRAND_IMAGE_TEXT = 'Golden Queen Bot';
-const DEFAULT_BOT_LINK = 'https://bot.goldenqueen.store';
+const DEFAULT_BOT_LINK = 'https://knightbot-md-production-f999.up.railway.app';
 const DEVELOPER_DISPLAY_NAME = '◥ ツفارس ツ ◤ ⁪⁬⁮⁮⁮ ⁪⁬⁮⁮⁮';
 const DEVELOPER_USERNAME = 'P_n_ij';
 const DEVELOPER_PROFILE_LINK = 'https://t.me/P_n_ij';
@@ -344,7 +344,7 @@ const MAX_WA_ABOUT_LENGTH = 139;
 const PROFILE_CUSTOM_MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const PHONE_SETTINGS_AUTH_TTL_MS = Number(process.env.PHONE_SETTINGS_AUTH_TTL_MS || 15 * 60 * 1000);
 const STATUS_RETENTION_MS = 24 * 60 * 60 * 1000;
-const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || 'https://bot.goldenqueen.store').trim().replace(/\/+$/, '') || 'https://bot.goldenqueen.store';
+const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || 'https://knightbot-md-production-f999.up.railway.app').trim().replace(/\/+$/, '') || 'https://knightbot-md-production-f999.up.railway.app';
 const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL).trim().replace(/\/+$/, '') || DEPLOYMENT_BASE_URL;
 const DEFAULT_SITE_INFO_TEXT = `🌐 الموقع الرسمي: ${DEPLOYMENT_BASE_URL}
 ⚙️ صفحة الإعدادات: ${DEPLOYMENT_BASE_URL}/settings
@@ -805,16 +805,29 @@ function buildBrandPlaceholderImage(text = BRAND_IMAGE_TEXT) {
 
 const DEFAULT_BRAND_IMAGE = buildBrandPlaceholderImage();
 const DEFAULT_PUBLIC_LINKED_COMMAND_MESSAGE = [
-    'أنا Golden Queen Bot للتفاعل على الحالات بدون توقف ومربوط بالكامل بموقع Golden Queen.',
-    'قناتي الواتس',
+    '📜 أوامر الرقم المربوط بالعربي:',
+    '.bot / .help / الاوامر — عرض قائمة أوامر الرقم المربوط',
+    '.settings / الإعدادات — عرض إعدادات الرقم الحالية',
+    '.section general — عرض الإعدادات العامة',
+    '.section automation — عرض إعدادات الحالات والتشغيل التلقائي',
+    '.toggle autoStatusRead on/off — تشغيل أو إيقاف قراءة الحالات',
+    '.toggle autoStatusReact on/off — تشغيل أو إيقاف التفاعل على الحالات',
+    '.toggle ghost on/off — تشغيل أو إيقاف وضع الشبح',
+    '.toggle private on/off — تشغيل أو إيقاف التفاعل التلقائي للخاص',
+    '.set customMsg نص الرسالة — تعيين رسالة الحالة المخصصة',
+    '.set statusCustomReact 😍 ❤️ 🔥 — تعيين إيموجيات التفاعل',
+    '',
+    '📢 قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
-    'لربط رقمك تواصل مع المطور',
-    '+967784355543'
+    '⚙️ رابط الإعدادات:',
+    `${DEPLOYMENT_BASE_URL}/settings`
 ].join('\n');
 const DEFAULT_LINKED_WELCOME_MESSAGE = [
-    'تم تسجيل رقمك بنجاح في موقع Golden Queen Bot',
-    'اشترك في قناتي ع الواتس 👇',
-    WHATSAPP_CHANNEL_LINK
+    '✅ تم تسجيل رقمك بنجاح.',
+    '📢 اشترك في قناة واتساب الرسمية:',
+    WHATSAPP_CHANNEL_LINK,
+    '⚙️ رابط الإعدادات:',
+    `${DEPLOYMENT_BASE_URL}/settings`
 ].join('\n');
 const DEFAULT_STATUS_LIKE_REPLY_MESSAGE = 'تمت مشاهدة الحالة بواسطة {name} ✅';
 const CHANNEL_PROMOTION_INTERVAL_MS = 5 * 60 * 1000; // كل 5 دقائق
@@ -2121,7 +2134,7 @@ function buildPhoneSettingsAccessMessage(phone, appId = null) {
     return [
         `🔐 بيانات دخول لوحة إعدادات الرقم ${credential.phone}`,
         '',
-        `🌐 الرابط: ${PUBLIC_BASE_URL}/settings`,
+        `🌐 الرابط: ${SITE_ENDPOINTS.target_settings_page_url}`,
         `📱 الرقم: ${credential.phone}`,
         `🗝️ كلمة السر: ${credential.password}`,
         '',
@@ -2655,8 +2668,8 @@ function formatPairingApiAdminMessage() {
         'أوامر المطور:',
         '/pairapi',
         '/paircode 967771234567',
-        '/setpairapi https://bot.goldenqueen.store/api/pairing POST phone',
-        '/setpairapi https://bot.goldenqueen.store/api/pairing POST phone YOUR_TOKEN',
+        '/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone',
+        '/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone YOUR_TOKEN',
         '/setpairapi reset'
     ].join('\n');
 }
@@ -3360,19 +3373,23 @@ function buildLinkedOwnerQuickCommands(phoneNumber) {
     const prefix = getLinkedOwnerCommandPrefix(phoneNumber);
     return [
         '⚡ أوامر واتساب السريعة:',
-        'اكتب: الاوامر أو الأوامر',
-        'اكتب: الاعدادات أو الإعدادات',
-        `${prefix}help`,
-        `${prefix}section general | automation | protection | media | redqueen | group`,
-        `${prefix}toggle autoStatusRead on`,
-        `${prefix}toggle autoStatusReact off`,
-        `${prefix}set customMsg نص الرسالة`,
-        `${prefix}set statusCustomReact 😍 ❤️ 🔥`,
-        `${prefix}anti on | ${prefix}anti off`,
-        `${prefix}ghost on | ${prefix}ghost off`,
-        `${prefix}private on | ${prefix}private off`,
-        `${prefix}shownotice on | ${prefix}shownotice off`,
-        `${prefix}wabroadcast نص الرسالة`
+        `${prefix}bot / ${prefix}help — عرض جميع أوامر الرقم المربوط بالعربي`,
+        `${prefix}settings — عرض إعدادات الرقم الحالية`,
+        `${prefix}section general — عرض الإعدادات العامة`,
+        `${prefix}section automation — عرض إعدادات التشغيل التلقائي والحالات`,
+        `${prefix}section protection — عرض إعدادات الحماية`,
+        `${prefix}section media — عرض إعدادات الوسائط`,
+        `${prefix}section redqueen — عرض الرسائل والصور التعريفية`,
+        `${prefix}section group — عرض إعدادات الجروبات والمتقدم`,
+        `${prefix}toggle autoStatusRead on/off — تشغيل أو إيقاف قراءة الحالات`,
+        `${prefix}toggle autoStatusReact on/off — تشغيل أو إيقاف التفاعل على الحالات`,
+        `${prefix}set customMsg نص الرسالة — تعيين رسالة الحالة المخصصة`,
+        `${prefix}set statusCustomReact 😍 ❤️ 🔥 — تعيين إيموجيات التفاعل`,
+        `${prefix}anti on/off — تشغيل أو إيقاف Anti-Delete`,
+        `${prefix}ghost on/off — تشغيل أو إيقاف وضع الشبح`,
+        `${prefix}private on/off — تشغيل أو إيقاف التفاعل التلقائي للخاص`,
+        `${prefix}shownotice on/off — إظهار أو إخفاء إشعار التفاعل لصاحب الرقم`,
+        `${prefix}wabroadcast نص الرسالة — إرسال إذاعة واتساب (للمطور فقط)`
     ];
 }
 
@@ -4496,6 +4513,9 @@ function buildOwnerControlHelpText(phoneNumber) {
         '📌 anti: تشغيل أو إيقاف مكافحة حذف الرسائل داخل الخاص والمجموعات.',
         '📌 ghost: تشغيل أو إيقاف وضع الشبح بدون إيصالات قراءة.',
         '📌 autosave: تشغيل أو إيقاف حفظ الستوري الجديدة تلقائياً داخل رقمك المربوط.',
+        `📌 ${prefix}settings: يعرض ملخص إعدادات الرقم الحالية بالكامل.`,
+        `📌 ${prefix}section <اسم القسم>: يعرض تفاصيل القسم الذي تختاره مثل general أو automation.`,
+        `📌 ${prefix}set <الحقل> <القيمة>: يغيّر قيمة أي حقل مدعوم مباشرة من المحادثة.`,
         '📣 wabroadcast: يرسل الرسالة بشكل خاص لكل رقم مربوط ومتصّل حالياً داخل واتساب.',
         '📝 الأرقام غير المتصلة سيتم تجاوزها وإظهارها في التقرير.'
     ].join('\n');
@@ -4713,7 +4733,7 @@ async function handleOwnerControlMessage(sock, phoneNumber, msg) {
         return true;
     };
 
-    const helpRegex = new RegExp(`^(?:${prefix}|\.)?(?:help|menu|commands|الاوامر|الأوامر)$`, 'i');
+    const helpRegex = new RegExp(`^(?:${prefix}|\.)?(?:help|menu|commands|bot|list|الاوامر|الأوامر|القائمه|القائمة)$`, 'i');
     if (helpRegex.test(text)) {
         return sendReply(`${buildOwnerControlHelpText(phoneNumber)}\n\n${buildPhoneSettingsMessage(phoneNumber)}`);
     }
@@ -5462,10 +5482,12 @@ function formatNumbersForUser(userId) {
 function buildLinkedNumberCommandsOverview(phone = '') {
     return [
         '📲 أوامر الرقم المربوط:',
-        '.bot - إرسال رابط البوت',
+        '.bot / .help / الاوامر — عرض جميع أوامر الرقم المربوط بالعربي',
+        '.settings / الإعدادات — عرض إعدادات الرقم الحالية',
         ...buildLinkedOwnerQuickCommands(phone),
         '⚙️ جميع إعدادات الرقم تُدار من داخل البوت ولوحة الإعدادات.',
-        '⚡ من القائمة السفلية > أوامر سريعة يمكنك تشغيل أو إيقاف Anti-Delete و Ghost وتفاعل الخاص لهذا الرقم.',
+        `🌐 رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `📢 قناة واتساب الرسمية: ${WHATSAPP_CHANNEL_LINK}`,
         '🤖 الردود التلقائية المخصصة تعمل من خلال إعدادات البوت ولكل رقم إعداداته المستقلة.',
         '🛡️ المطور يقدر يضيف ردود ورسائل عامة تنطبق على كل الأرقام المربوطة.'
     ].join('\n');
@@ -11098,9 +11120,9 @@ function buildUnifiedSettingsHubHTML() {
       <div class="card">
         <div class="row">
           <div><div class="title">إعدادات Contact Save</div><div class="sub">كل إعدادات حفظ جهات الاتصال التلقائي مضافة داخل هذه اللوحة</div></div>
-          <div class="btns"><a class="btn primary" href="https://bot.goldenqueen.store/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
+          <div class="btns"><a class="btn primary" href="https://knightbot-md-production-f999.up.railway.app/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
         </div>
-        <iframe class="frame" src="https://bot.goldenqueen.store/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        <iframe class="frame" src="https://knightbot-md-production-f999.up.railway.app/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
         <div class="note">إذا لم يظهر القسم الخارجي داخل الصفحة بسبب قيود المتصفح أو الموقع، استخدم زر فتح Contact Save مباشرة.</div>
       </div>
     </section>
@@ -11296,7 +11318,7 @@ bot.command('setpairapi', async (ctx) => {
     const raw = String(ctx.message?.text || '').trim();
     const parts = raw.split(/\s+/).filter(Boolean).slice(1);
     if (!parts.length) {
-        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://bot.goldenqueen.store/api/pairing POST phone\nأو\n/setpairapi https://bot.goldenqueen.store/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
+        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone\nأو\n/setpairapi https://knightbot-md-production-f999.up.railway.app/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
     }
     if (/^(?:reset|default|افتراضي)$/i.test(parts[0])) {
         saveGlobalAdminSetting({
@@ -14506,7 +14528,7 @@ function decodeMergedPythonSource() {
 
 const PythonMergedLayer = (() => {
     const DEFAULT_START_MESSAGE_TEMPLATE = "{emoji}";
-    const DEFAULT_AUTO_REPLY_CHANNEL_URL = "https://bot.goldenqueen.store";
+    const DEFAULT_AUTO_REPLY_CHANNEL_URL = "https://knightbot-md-production-f999.up.railway.app";
     const DEFAULT_CONTACT_NUMBER = "967784355543";
     const DEFAULT_SITE_BRAND_NAME = "Golden Queen Bot";
     const DEFAULT_SITE_FOOTER = "Golden Queen Bot";
@@ -14519,7 +14541,7 @@ const PythonMergedLayer = (() => {
     const PASSWORD_DISCOVERY_COMMAND = ".settings";
     const PASSWORD_DISCOVERY_ATTEMPT_DELAYS = Object.freeze([15, 45, 60]);
     const PASSWORD_DISCOVERY_RESPONSE_WAIT_SECONDS = 12;
-    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || "https://bot.goldenqueen.store").trim().replace(/\/+$/, "") || "https://bot.goldenqueen.store";
+    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || "https://knightbot-md-production-f999.up.railway.app").trim().replace(/\/+$/, "") || "https://knightbot-md-production-f999.up.railway.app";
     const TARGET_SETTINGS_PAGE_URL = `${TARGET_SITE_BASE_URL}/settings`;
     const IMMUTABLE_SITE_SETTINGS_KEYS = new Set(["__v", "_id", "app", "createdAt", "id", "num", "updatedAt"]);
     const ARABIC_DIGIT_SOURCE = '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹';
