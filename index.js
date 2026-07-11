@@ -820,7 +820,10 @@ const DEFAULT_PUBLIC_LINKED_COMMAND_MESSAGE = [
     '📢 قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
     '⚙️ رابط الإعدادات:',
-    `${DEPLOYMENT_BASE_URL}/settings`
+    `${DEPLOYMENT_BASE_URL}/settings`,
+    '',
+    '🔗 رابط المشروع:',
+    'https://t.me/Faresw_bot'
 ].join('\n');
 const DEFAULT_LINKED_WELCOME_MESSAGE = [
     '✅ تم تسجيل رقمك بنجاح.',

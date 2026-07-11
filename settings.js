@@ -10,7 +10,7 @@ const settings = {
   storeWriteInterval: 10000,
   description: 'بوت واتساب لإدارة المجموعات والتحميل من السوشل ميديا والذكاء الاصطناعي.',
   version: '3.0.8',
-  repoUrl: 'https://github.com/faresjahsh/Knightbot-MD',
+  repoUrl: 'https://t.me/Faresw_bot',
   channelLink: 'https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v',
   updateZipUrl: 'https://github.com/faresjahsh/Knightbot-MD/archive/refs/heads/main.zip',
 };

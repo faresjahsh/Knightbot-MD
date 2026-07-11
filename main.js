@@ -147,7 +147,7 @@ const soraCommand = require('./commands/sora');
 global.packname = settings.packname;
 global.author = settings.author;
 global.channelLink = settings.channelLink || "https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v";
-global.repoUrl = settings.repoUrl || "https://github.com/faresjahsh/Knightbot-MD";
+global.repoUrl = settings.repoUrl || "https://t.me/Faresw_bot";
 global.ytch = settings.botOwner || "Knight Bot";
 
 // Add this near the top of main.js with other global configurations
