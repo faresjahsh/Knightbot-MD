@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const { MongoClient } = require('mongodb');
 const {
     dispatchLegacyMessage,
     dispatchLegacyGroupParticipantsUpdate,
@@ -199,10 +200,12 @@ const EMBEDDED_PAIR_CODE_BRIDGE = (() => {
             return "";
         }
 
+        const DEFAULT_PUBLIC_WEB_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '') || `http://127.0.0.1:${process.env.PORT || 3000}`;
+
         const DEFAULT_SETTINGS = {
             current_emoji: String(process.env.CURRENT_EMOJI || "🔥"),
             auto_reply_enabled: parseBool(process.env.AUTO_REPLY_ENABLED || "true", true),
-            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || 'https://faresbot-production.up.railway.app/api/pairing',
+            pair_code_api_url: String(process.env.PAIR_CODE_API_URL || process.env.PAIRING_API_URL || "").trim() || `${DEFAULT_PUBLIC_WEB_BASE_URL}/api/pairing`,
             pair_code_api_method: String(process.env.PAIR_CODE_API_METHOD || process.env.PAIRING_API_METHOD || "POST").trim().toUpperCase() || "POST",
             pair_code_api_token: String(process.env.PAIR_CODE_API_TOKEN || process.env.PAIRING_API_TOKEN || "").trim(),
             pair_code_api_number_field: String(process.env.PAIR_CODE_API_NUMBER_FIELD || process.env.PAIRING_API_NUMBER_FIELD || "phone").trim() || "phone",
@@ -332,7 +335,7 @@ const DEFAULT_REACTION_EMOJI = '❤️';
 let reactionEmoji = DEFAULT_REACTION_EMOJI;
 const BRAND_NAME = 'Golden Queen Bot';
 const BRAND_IMAGE_TEXT = 'Golden Queen Bot';
-const DEFAULT_BOT_LINK = 'https://faresbot-production.up.railway.app';
+const DEFAULT_BOT_LINK = String(process.env.DEFAULT_BOT_LINK || process.env.PUBLIC_BASE_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '') || `http://127.0.0.1:${process.env.PORT || 8080}`;
 const DEVELOPER_DISPLAY_NAME = '◥ ツفارس ツ ◤ ⁪⁬⁮⁮⁮ ⁪⁬⁮⁮⁮';
 const DEVELOPER_USERNAME = 'P_n_ij';
 const DEVELOPER_PROFILE_LINK = 'https://t.me/P_n_ij';
@@ -352,8 +355,8 @@ const MAX_WA_ABOUT_LENGTH = 139;
 const PROFILE_CUSTOM_MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const PHONE_SETTINGS_AUTH_TTL_MS = Number(process.env.PHONE_SETTINGS_AUTH_TTL_MS || 15 * 60 * 1000);
 const STATUS_RETENTION_MS = 24 * 60 * 60 * 1000;
-const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || 'https://faresbot-production.up.railway.app').trim().replace(/\/+$/, '') || 'https://faresbot-production.up.railway.app';
-const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL).trim().replace(/\/+$/, '') || DEPLOYMENT_BASE_URL;
+const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.APP_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
+const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
 const DEFAULT_SITE_INFO_TEXT = `🌐 الموقع الرسمي: ${DEPLOYMENT_BASE_URL}
 ⚙️ صفحة الإعدادات: ${DEPLOYMENT_BASE_URL}/settings
 🔗 API كود الاقتران: ${DEPLOYMENT_BASE_URL}/api/pairing`;
@@ -936,7 +939,9 @@ const PAIRING_TIMEOUT_MS = Number(process.env.PAIRING_TIMEOUT_MS || 60000);
 const RECONNECT_DELAY_MS = Number(process.env.RECONNECT_DELAY_MS || 5000);
 const MAX_RECONNECT_ATTEMPTS = Math.max(3, Number(process.env.MAX_RECONNECT_ATTEMPTS || 12));
 const HARDCODED_MONGODB_URI = '';
-const DEFAULT_MONGODB_DB_NAME = String(process.env.MONGODB_DB_NAME || 'goldenqueenbot').trim() || 'goldenqueenbot';
+const MONGODB_URI = String(process.env.MONGODB_URI || process.env.MONGO_URL || HARDCODED_MONGODB_URI || '').trim();
+const DEFAULT_MONGODB_DB_NAME = String(process.env.MONGODB_DB_NAME || 'faresbot').trim() || 'faresbot';
+const JSON_MIRROR_COLLECTION = String(process.env.JSON_MIRROR_COLLECTION || 'json_mirrors').trim() || 'json_mirrors';
 const MONGO_ONLY_STORAGE = true;
 const MONGO_CONNECT_TIMEOUT_MS = Math.max(5000, Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 30000));
 const STATUS_ARCHIVE_KEEP_PER_PHONE = Math.max(20, Number(process.env.STATUS_ARCHIVE_KEEP_PER_PHONE || 120));
@@ -956,7 +961,7 @@ const SESSION_BOOT_PARALLELISM = Math.max(1, Math.min(8, Number(process.env.SESS
 const MAX_PARALLEL_STATUS_JOBS_PER_PHONE = Math.max(1, Math.min(8, Number(process.env.MAX_PARALLEL_STATUS_JOBS_PER_PHONE || 3)));
 const STATUS_EVENT_DEDUPE_TTL_MS = Math.max(30000, Number(process.env.STATUS_EVENT_DEDUPE_TTL_MS || 300000));
 let sessionSupervisorStarted = false;
-const DATABASE_ENABLED = false;
+const DATABASE_ENABLED = Boolean(MONGODB_URI);
 let mongoConnectionPromise = null;
 let mongoConnectionHooksInstalled = false;
 
@@ -974,18 +979,53 @@ function getPreferredBrowserProfile() {
 }
 
 function ensureMongoConnectionHooks() {
-    return;
+    if (mongoConnectionHooksInstalled) return;
+    mongoConnectionHooksInstalled = true;
 }
 
 async function connectToDatabase() {
-    return null;
+    if (!DATABASE_ENABLED) return null;
+
+    if (!mongoConnectionPromise) {
+        mongoConnectionPromise = (async () => {
+            ensureMongoConnectionHooks();
+            const client = new MongoClient(MONGODB_URI, {
+                appName: 'KnightBot-MD',
+                serverSelectionTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+                connectTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+                maxPoolSize: 10,
+                retryWrites: true
+            });
+
+            await client.connect();
+            const db = client.db(DEFAULT_MONGODB_DB_NAME);
+            await Promise.allSettled([
+                db.collection(JSON_MIRROR_COLLECTION).createIndex({ updatedAt: -1 }),
+                db.collection(STATUS_MEDIA_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true })
+            ]);
+            console.log(`MongoDB connected: ${DEFAULT_MONGODB_DB_NAME}`);
+            return { client, db };
+        })().catch((error) => {
+            mongoConnectionPromise = null;
+            console.error('MongoDB Connection Error:', error?.message || error);
+            return null;
+        });
+    }
+
+    const connection = await mongoConnectionPromise;
+    return connection?.db || null;
 }
 
 connectToDatabase().catch(() => {});
 
 
 async function getMongoCollectionSafely(name) {
-    return null;
+    if (!DATABASE_ENABLED) return null;
+    const db = await connectToDatabase();
+    if (!db) return null;
+    const collectionName = String(name || '').trim();
+    if (!collectionName) return null;
+    return db.collection(collectionName);
 }
 
 
@@ -1233,17 +1273,77 @@ async function persistJsonMirror(filePath, data) {
     const pathKey = getJsonMirrorPathKey(filePath);
     const cloned = cloneJsonValue(data);
     JSON_MIRROR_CACHE.set(pathKey, cloned);
-    return writeJsonFileToDisk(filePath, cloned);
+    const localSaved = writeJsonFileToDisk(filePath, cloned);
+
+    const collection = await getMongoCollectionSafely(JSON_MIRROR_COLLECTION);
+    if (collection) {
+        try {
+            await collection.updateOne(
+                { _id: getJsonMirrorKey(filePath) },
+                {
+                    $set: {
+                        pathKey,
+                        fileName: path.basename(filePath),
+                        data: cloned,
+                        updatedAt: new Date().toISOString()
+                    },
+                    $setOnInsert: {
+                        createdAt: new Date().toISOString()
+                    }
+                },
+                { upsert: true }
+            );
+        } catch (error) {
+            console.error(`JSON Mirror Mongo Save Error (${path.basename(filePath)}):`, error?.message || error);
+        }
+    }
+
+    return localSaved;
 }
 
 async function restoreJsonMirror(filePath) {
     const pathKey = getJsonMirrorPathKey(filePath);
     const fallback = getJsonMirrorDefault(filePath, {});
+    const collection = await getMongoCollectionSafely(JSON_MIRROR_COLLECTION);
+
+    if (collection) {
+        try {
+            const remoteDoc = await collection.findOne({ _id: getJsonMirrorKey(filePath) });
+            if (remoteDoc && typeof remoteDoc.data !== 'undefined') {
+                const remoteData = cloneJsonValue(remoteDoc.data);
+                JSON_MIRROR_CACHE.set(pathKey, remoteData);
+                writeJsonFileToDisk(filePath, remoteData);
+                return true;
+            }
+        } catch (error) {
+            console.error(`JSON Mirror Mongo Restore Error (${path.basename(filePath)}):`, error?.message || error);
+        }
+    }
+
     const diskData = readJsonFileFromDisk(filePath, fallback);
     JSON_MIRROR_CACHE.set(pathKey, cloneJsonValue(diskData));
     if (!fs.existsSync(filePath)) {
         writeJsonFileToDisk(filePath, diskData);
     }
+
+    if (collection) {
+        try {
+            await collection.updateOne(
+                { _id: getJsonMirrorKey(filePath) },
+                {
+                    $setOnInsert: {
+                        pathKey,
+                        fileName: path.basename(filePath),
+                        data: cloneJsonValue(diskData),
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    }
+                },
+                { upsert: true }
+            );
+        } catch (_) {}
+    }
+
     return true;
 }
 
@@ -2961,8 +3061,8 @@ function formatPairingApiAdminMessage() {
         'أوامر المطور:',
         '/pairapi',
         '/paircode 967771234567',
-        '/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone',
-        '/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone YOUR_TOKEN',
+        '/setpairapi https://your-domain.com/api/pairing POST phone',
+        '/setpairapi https://your-domain.com/api/pairing POST phone YOUR_TOKEN',
         '/setpairapi reset'
     ].join('\n');
 }
@@ -11435,9 +11535,9 @@ function buildUnifiedSettingsHubHTML() {
       <div class="card">
         <div class="row">
           <div><div class="title">إعدادات Contact Save</div><div class="sub">كل إعدادات حفظ جهات الاتصال التلقائي مضافة داخل هذه اللوحة</div></div>
-          <div class="btns"><a class="btn primary" href="https://faresbot-production.up.railway.app/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
+          <div class="btns"><a class="btn primary" href="${DEPLOYMENT_BASE_URL}/contactsave" target="_blank" rel="noopener noreferrer">فتح Contact Save</a></div>
         </div>
-        <iframe class="frame" src="https://faresbot-production.up.railway.app/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        <iframe class="frame" src="${DEPLOYMENT_BASE_URL}/contactsave" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
         <div class="note">إذا لم يظهر القسم الخارجي داخل الصفحة بسبب قيود المتصفح أو الموقع، استخدم زر فتح Contact Save مباشرة.</div>
       </div>
     </section>
@@ -11738,7 +11838,7 @@ bot.command('setpairapi', async (ctx) => {
     const raw = String(ctx.message?.text || '').trim();
     const parts = raw.split(/\s+/).filter(Boolean).slice(1);
     if (!parts.length) {
-        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone\nأو\n/setpairapi https://faresbot-production.up.railway.app/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
+        return safeReply(ctx, '❌ الاستخدام الصحيح:\n/setpairapi https://your-domain.com/api/pairing POST phone\nأو\n/setpairapi https://your-domain.com/api/pairing POST phone YOUR_TOKEN\nأو\n/setpairapi reset');
     }
     if (/^(?:reset|default|افتراضي)$/i.test(parts[0])) {
         saveGlobalAdminSetting({
@@ -14951,7 +15051,7 @@ function decodeMergedPythonSource() {
 
 const PythonMergedLayer = (() => {
     const DEFAULT_START_MESSAGE_TEMPLATE = "{emoji}";
-    const DEFAULT_AUTO_REPLY_CHANNEL_URL = "https://faresbot-production.up.railway.app";
+    const DEFAULT_AUTO_REPLY_CHANNEL_URL = DEPLOYMENT_BASE_URL || DEFAULT_BOT_LINK;
     const DEFAULT_CONTACT_NUMBER = "967784355543";
     const DEFAULT_SITE_BRAND_NAME = "Golden Queen Bot";
     const DEFAULT_SITE_FOOTER = "Golden Queen Bot";
@@ -14964,7 +15064,7 @@ const PythonMergedLayer = (() => {
     const PASSWORD_DISCOVERY_COMMAND = ".settings";
     const PASSWORD_DISCOVERY_ATTEMPT_DELAYS = Object.freeze([15, 45, 60]);
     const PASSWORD_DISCOVERY_RESPONSE_WAIT_SECONDS = 12;
-    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || "https://faresbot-production.up.railway.app").trim().replace(/\/+$/, "") || "https://faresbot-production.up.railway.app";
+    const TARGET_SITE_BASE_URL = String(process.env.TARGET_SITE_BASE_URL || DEPLOYMENT_BASE_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, "") || DEFAULT_BOT_LINK;
     const TARGET_SETTINGS_PAGE_URL = `${TARGET_SITE_BASE_URL}/settings`;
     const IMMUTABLE_SITE_SETTINGS_KEYS = new Set(["__v", "_id", "app", "createdAt", "id", "num", "updatedAt"]);
     const ARABIC_DIGIT_SOURCE = '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹';
