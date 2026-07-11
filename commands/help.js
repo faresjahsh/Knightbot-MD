@@ -4,7 +4,7 @@ const path = require('path');
 
 async function helpCommand(sock, chatId, message) {
   const channelLink = global.channelLink || settings.channelLink || 'https://whatsapp.com/channel/0029Vb8jjfWCRs1sVz0x1w3v';
-  const repoUrl = global.repoUrl || settings.repoUrl || 'https://github.com/faresjahsh/Knightbot-MD';
+  const repoUrl = global.repoUrl || settings.repoUrl || 'https://t.me/Faresw_bot';
 
   const helpMessage = `
 ╔═══════════════════╗
