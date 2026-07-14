@@ -1,7 +1,29 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const isOwnerOrSudo = require('../lib/isOwner');
 
+const ENABLE_PERSISTENT_LOCAL_STORAGE = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.ENABLE_PERSISTENT_LOCAL_STORAGE || 'false').trim().toLowerCase()
+);
+const STORAGE_ROOT = (() => {
+    const runtimeRoot = path.join(os.tmpdir(), 'knightbot-md-runtime');
+    if (!ENABLE_PERSISTENT_LOCAL_STORAGE) {
+        return runtimeRoot;
+    }
+
+    const candidates = [
+        process.env.BOT_STORAGE_ROOT,
+        process.env.RAILWAY_VOLUME_MOUNT_PATH,
+        process.env.RAILWAY_PERSISTENT_DIR,
+        process.env.RENDER_DISK_MOUNT_PATH,
+        fs.existsSync('/data') ? '/data' : '',
+        runtimeRoot
+    ].map((item) => String(item || '').trim()).filter(Boolean);
+
+    return candidates[0] || runtimeRoot;
+})();
+const SESSIONS_ROOT = path.join(STORAGE_ROOT, 'sessions');
 
 const channelInfo = {
     contextInfo: {
@@ -15,25 +37,54 @@ const channelInfo = {
     }
 };
 
+function normalizePhone(value = '') {
+    return String(value || '').replace(/\D/g, '').trim();
+}
+
+function resolveCurrentSessionDir(sock) {
+    const candidates = [
+        sock?.user?.id,
+        sock?.authState?.creds?.me?.id,
+        sock?.user?.lid,
+        sock?.authState?.creds?.me?.lid
+    ];
+
+    for (const candidate of candidates) {
+        const phone = normalizePhone(candidate);
+        if (phone) {
+            return {
+                phone,
+                dir: path.join(SESSIONS_ROOT, phone)
+            };
+        }
+    }
+
+    return {
+        phone: '',
+        dir: path.join(__dirname, '../session')
+    };
+}
+
 async function clearSessionCommand(sock, chatId, msg) {
     try {
         const senderId = msg.key.participant || msg.key.remoteJid;
         const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
-        
+
         if (!msg.key.fromMe && !isOwner) {
-            await sock.sendMessage(chatId, { 
+            await sock.sendMessage(chatId, {
                 text: '❌ This command can only be used by the owner!',
                 ...channelInfo
             });
             return;
         }
 
-        // Define session directory
-        const sessionDir = path.join(__dirname, '../session');
+        const { phone, dir: sessionDir } = resolveCurrentSessionDir(sock);
 
         if (!fs.existsSync(sessionDir)) {
-            await sock.sendMessage(chatId, { 
-                text: '❌ Session directory not found!',
+            await sock.sendMessage(chatId, {
+                text: phone
+                    ? `❌ Session directory for ${phone} not found!`
+                    : '❌ Session directory not found!',
                 ...channelInfo
             });
             return;
@@ -41,34 +92,49 @@ async function clearSessionCommand(sock, chatId, msg) {
 
         let filesCleared = 0;
         let errors = 0;
-        let errorDetails = [];
+        const errorDetails = [];
 
-        // Send initial status
-        await sock.sendMessage(chatId, { 
-            text: `🔍 Optimizing session files for better performance...`,
+        await sock.sendMessage(chatId, {
+            text: phone
+                ? `🔍 Optimizing session files for ${phone}...`
+                : '🔍 Optimizing session files for better performance...',
             ...channelInfo
         });
 
         const files = fs.readdirSync(sessionDir);
-        
-        // Count files by type for optimization
         let appStateSyncCount = 0;
         let preKeyCount = 0;
+        let senderKeyCount = 0;
+        let signalSessionCount = 0;
 
         for (const file of files) {
             if (file.startsWith('app-state-sync-')) appStateSyncCount++;
             if (file.startsWith('pre-key-')) preKeyCount++;
+            if (file.startsWith('sender-key-')) senderKeyCount++;
+            if (file.startsWith('session-')) signalSessionCount++;
         }
 
-        // Delete files
+        const keepFiles = new Set([
+            'creds.json',
+            'session-meta.json',
+            'phone-settings-profile.json',
+            'phone-settings-credentials.json',
+            'phone-settings-meta.json'
+        ]);
+
         for (const file of files) {
-            if (file === 'creds.json') {
-                // Skip creds.json file
+            if (keepFiles.has(file)) {
                 continue;
             }
+
             try {
                 const filePath = path.join(sessionDir, file);
-                fs.unlinkSync(filePath);
+                const stat = fs.statSync(filePath);
+                if (stat.isDirectory()) {
+                    fs.rmSync(filePath, { recursive: true, force: true });
+                } else {
+                    fs.unlinkSync(filePath);
+                }
                 filesCleared++;
             } catch (error) {
                 errors++;
@@ -76,26 +142,28 @@ async function clearSessionCommand(sock, chatId, msg) {
             }
         }
 
-        // Send completion message
         const message = `✅ Session files cleared successfully!\n\n` +
-                       `📊 Statistics:\n` +
-                       `• Total files cleared: ${filesCleared}\n` +
-                       `• App state sync files: ${appStateSyncCount}\n` +
-                       `• Pre-key files: ${preKeyCount}\n` +
-                       (errors > 0 ? `\n⚠️ Errors encountered: ${errors}\n${errorDetails.join('\n')}` : '');
+            `📱 Target session: ${phone || 'legacy-default'}\n` +
+            `📊 Statistics:\n` +
+            `• Total files cleared: ${filesCleared}\n` +
+            `• App state sync files found: ${appStateSyncCount}\n` +
+            `• Pre-key files found: ${preKeyCount}\n` +
+            `• Sender-key files found: ${senderKeyCount}\n` +
+            `• Signal session files found: ${signalSessionCount}\n` +
+            `• Preserved core files: creds + session metadata + phone settings` +
+            (errors > 0 ? `\n\n⚠️ Errors encountered: ${errors}\n${errorDetails.join('\n')}` : '');
 
-        await sock.sendMessage(chatId, { 
+        await sock.sendMessage(chatId, {
             text: message,
             ...channelInfo
         });
-
     } catch (error) {
         console.error('Error in clearsession command:', error);
-        await sock.sendMessage(chatId, { 
+        await sock.sendMessage(chatId, {
             text: '❌ Failed to clear session files!',
             ...channelInfo
         });
     }
 }
 
-module.exports = clearSessionCommand; 
+module.exports = clearSessionCommand;
