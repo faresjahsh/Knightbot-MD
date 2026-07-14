@@ -943,9 +943,6 @@ const phoneSettingsAuthSessions = new Map();
 const channelPromotionTimers = new Map();
 const deletedMessageBackups = new Map();
 const sessionPingTimers = new Map();
-const sessionSnapshotSyncTimers = new Map();
-const sessionSnapshotSyncMetadata = new Map();
-const sessionSnapshotSyncPromises = new Map();
 const phoneJobQueues = new Map();
 const recentStatusEvents = new Map();
 const DELETED_MESSAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -963,7 +960,6 @@ const PAIRING_API_METHODS = ['GET', 'POST'];
 const PAIRING_TIMEOUT_MS = Number(process.env.PAIRING_TIMEOUT_MS || 60000);
 const RECONNECT_DELAY_MS = Number(process.env.RECONNECT_DELAY_MS || 5000);
 const MAX_RECONNECT_ATTEMPTS = Math.max(3, Number(process.env.MAX_RECONNECT_ATTEMPTS || 12));
-const SESSION_REMOTE_SYNC_DEBOUNCE_MS = Math.max(250, Number(process.env.SESSION_REMOTE_SYNC_DEBOUNCE_MS || 1500));
 const HARDCODED_MONGODB_URI = '';
 const MONGODB_URI = String(process.env.MONGODB_URI || process.env.MONGO_URL || HARDCODED_MONGODB_URI || '').trim();
 const DEFAULT_MONGODB_DB_NAME = String(process.env.MONGODB_DB_NAME || 'faresbot').trim() || 'faresbot';
@@ -1624,38 +1620,12 @@ async function getMongoAuthState(phone) {
     const sessionDir = getSessionStorageDir(sessionKey);
     ensureDir(sessionDir);
 
-    if (normalizedPhone) {
-        await ensureSessionStateReady(normalizedPhone);
-    }
-
     if (normalizedPhone && !sessionHasLocalAuthFiles(normalizedPhone)) {
         await restoreSessionFromRemoteStore(normalizedPhone);
     }
 
     const helperAuth = await useMultiFileAuthState(sessionDir);
     const state = helperAuth.state;
-
-    if (!state?.keys?.__remoteSyncWrapped && typeof state?.keys?.set === 'function') {
-        const originalSet = state.keys.set.bind(state.keys);
-        state.keys.set = async (data, ...args) => {
-            const result = await originalSet(data, ...args);
-            const hasMutations = data && typeof data === 'object' && Object.values(data).some((bucket) => bucket && typeof bucket === 'object' && Object.keys(bucket).length > 0);
-            if (hasMutations && normalizedPhone) {
-                scheduleSessionSnapshotSync(normalizedPhone, {
-                    ownerId: getPhoneOwner?.(normalizedPhone) || '',
-                    registered: state?.creds?.registered === true,
-                    lastConnectedAt: readLocalSessionMeta(normalizedPhone)?.lastConnectedAt || null
-                });
-            }
-            return result;
-        };
-        Object.defineProperty(state.keys, '__remoteSyncWrapped', {
-            value: true,
-            enumerable: false,
-            configurable: true,
-            writable: false
-        });
-    }
 
     const saveCreds = async (metadata = {}) => {
         const registered = metadata.registered === true || state?.creds?.registered === true;
@@ -1673,7 +1643,7 @@ async function getMongoAuthState(phone) {
             lastConnectedAt: payload.lastConnectedAt
         });
 
-        await flushSessionSnapshotSync(normalizedPhone || sessionKey, payload);
+        await syncSessionToRemoteStore(normalizedPhone || sessionKey, payload);
     };
 
     return { state, saveCreds };
@@ -1988,194 +1958,6 @@ async function syncSessionToRemoteStore(phone = '', metadata = {}) {
         console.error(`Remote Session Sync Error (${normalizedPhone}):`, error.message || error);
         return false;
     }
-}
-
-function mergeSessionSyncMetadata(phone = '', ...sources) {
-    const normalizedPhone = normalizePhone(phone);
-    const localMeta = normalizedPhone ? readLocalSessionMeta(normalizedPhone) : {};
-    const merged = {
-        ownerId: '',
-        registered: false,
-        lastConnectedAt: null
-    };
-
-    for (const source of [localMeta, ...sources]) {
-        if (!source || typeof source !== 'object') continue;
-        if (String(source.ownerId || '').trim()) {
-            merged.ownerId = String(source.ownerId || '').trim();
-        }
-        if (source.registered === true) {
-            merged.registered = true;
-        }
-        if (source.lastConnectedAt) {
-            merged.lastConnectedAt = source.lastConnectedAt;
-        }
-    }
-
-    if (!merged.ownerId && normalizedPhone) {
-        merged.ownerId = String(getPhoneOwner?.(normalizedPhone) || '').trim();
-    }
-
-    return merged;
-}
-
-async function flushSessionSnapshotSync(phone = '', metadata = {}) {
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) return false;
-
-    const timer = sessionSnapshotSyncTimers.get(normalizedPhone);
-    if (timer) {
-        clearTimeout(timer);
-        sessionSnapshotSyncTimers.delete(normalizedPhone);
-    }
-
-    const mergedMetadata = mergeSessionSyncMetadata(
-        normalizedPhone,
-        sessionSnapshotSyncMetadata.get(normalizedPhone) || {},
-        metadata || {}
-    );
-    sessionSnapshotSyncMetadata.set(normalizedPhone, mergedMetadata);
-
-    const previous = sessionSnapshotSyncPromises.get(normalizedPhone) || Promise.resolve(false);
-    const current = previous
-        .catch(() => false)
-        .then(async () => syncSessionToRemoteStore(normalizedPhone, mergeSessionSyncMetadata(normalizedPhone, sessionSnapshotSyncMetadata.get(normalizedPhone) || {})));
-
-    sessionSnapshotSyncPromises.set(normalizedPhone, current);
-
-    try {
-        return await current;
-    } finally {
-        if (sessionSnapshotSyncPromises.get(normalizedPhone) === current) {
-            sessionSnapshotSyncPromises.delete(normalizedPhone);
-        }
-    }
-}
-
-function scheduleSessionSnapshotSync(phone = '', metadata = {}, delayMs = SESSION_REMOTE_SYNC_DEBOUNCE_MS) {
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) return Promise.resolve(false);
-
-    const mergedMetadata = mergeSessionSyncMetadata(
-        normalizedPhone,
-        sessionSnapshotSyncMetadata.get(normalizedPhone) || {},
-        metadata || {}
-    );
-    sessionSnapshotSyncMetadata.set(normalizedPhone, mergedMetadata);
-
-    const existingTimer = sessionSnapshotSyncTimers.get(normalizedPhone);
-    if (existingTimer) {
-        clearTimeout(existingTimer);
-    }
-
-    return new Promise((resolve) => {
-        const timer = setTimeout(async () => {
-            sessionSnapshotSyncTimers.delete(normalizedPhone);
-            try {
-                resolve(await flushSessionSnapshotSync(normalizedPhone));
-            } catch (error) {
-                console.error(`Session Debounced Sync Error (${normalizedPhone}):`, error.message || error);
-                resolve(false);
-            }
-        }, Math.max(0, Number(delayMs) || 0));
-
-        if (typeof timer.unref === 'function') {
-            timer.unref();
-        }
-
-        sessionSnapshotSyncTimers.set(normalizedPhone, timer);
-    });
-}
-
-async function flushAllSessionSnapshotSyncs() {
-    const phones = new Set([
-        ...sessionSnapshotSyncMetadata.keys(),
-        ...sessionSnapshotSyncTimers.keys(),
-        ...waClients.keys()
-    ]);
-
-    if (!phones.size) return [];
-
-    return Promise.allSettled(
-        Array.from(phones).map((phone) => flushSessionSnapshotSync(phone))
-    );
-}
-
-function getSessionDirectoryHealth(phone = '') {
-    const normalizedPhone = normalizePhone(phone);
-    const meta = readLocalSessionMeta(normalizedPhone);
-    const files = listLocalSessionJsonFiles(normalizedPhone);
-    const invalidFiles = [];
-    let credsValid = false;
-    let hasCredsFile = false;
-    let hasSignalMaterial = false;
-
-    for (const fileName of files) {
-        const category = classifySessionJsonFile(fileName);
-        if (category === 'meta' || category === 'other') continue;
-        const filePath = path.join(getSessionStorageDir(normalizedPhone), fileName);
-
-        if (fileName === 'creds.json') {
-            hasCredsFile = true;
-        }
-        if (['app-state', 'prekey', 'sender', 'session'].includes(category)) {
-            hasSignalMaterial = true;
-        }
-
-        try {
-            JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            if (fileName === 'creds.json') {
-                credsValid = true;
-            }
-        } catch (_) {
-            invalidFiles.push(fileName);
-        }
-    }
-
-    const isRegistered = meta?.registered === true;
-    const hasUsableAuth = credsValid && invalidFiles.length === 0 && (hasSignalMaterial || !isRegistered);
-
-    return {
-        normalizedPhone,
-        meta,
-        files,
-        invalidFiles,
-        hasCredsFile,
-        credsValid,
-        hasSignalMaterial,
-        hasUsableAuth
-    };
-}
-
-async function ensureSessionStateReady(phone = '', options = {}) {
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) {
-        return { ready: false, restored: false, health: null };
-    }
-
-    let health = getSessionDirectoryHealth(normalizedPhone);
-    let restored = false;
-    const shouldRestoreFromRemote = options.forceRemote === true || !health.hasUsableAuth || health.invalidFiles.length > 0;
-
-    if (shouldRestoreFromRemote && isRemoteSessionStoreEnabled()) {
-        try {
-            const remoteRecord = await fetchRemoteSession(normalizedPhone);
-            const remoteFilesCount = Object.keys(remoteRecord?.files || {}).length;
-            if (remoteFilesCount > 0) {
-                writeSessionDirectorySnapshot(normalizedPhone, remoteRecord);
-                restored = true;
-                health = getSessionDirectoryHealth(normalizedPhone);
-            }
-        } catch (error) {
-            console.error(`Remote Session Prepare Error (${normalizedPhone}):`, error.message || error);
-        }
-    }
-
-    return {
-        ready: health.hasUsableAuth,
-        restored,
-        health
-    };
 }
 
 function removeDirRecursive(dirPath) {
@@ -7984,7 +7766,6 @@ async function purgeSessionData(phone) {
     const normalized = normalizePhone(phone);
     if (!normalized) return;
     clearReconnectTimer(normalized);
-    clearSessionSnapshotSyncState(normalized);
     clearPairingRequest(normalized);
     clearChannelPromotionTimer(normalized);
     clearPresenceTimer(normalized);
@@ -8069,18 +7850,6 @@ function clearReconnectTimer(phone) {
     }
 }
 
-function clearSessionSnapshotSyncState(phone) {
-    const normalized = normalizePhone(phone);
-    if (!normalized) return;
-    const timer = sessionSnapshotSyncTimers.get(normalized);
-    if (timer) {
-        clearTimeout(timer);
-        sessionSnapshotSyncTimers.delete(normalized);
-    }
-    sessionSnapshotSyncMetadata.delete(normalized);
-    sessionSnapshotSyncPromises.delete(normalized);
-}
-
 function clearPairingRequest(phone) {
     const normalized = normalizePhone(phone);
     const pending = pairingRequests.get(normalized);
@@ -8118,7 +7887,6 @@ async function cleanupSessionAfterReconnectFailure(phone, ownerId = null, reason
     const sock = waClients.get(normalized);
 
     clearReconnectTimer(normalized);
-    clearSessionSnapshotSyncState(normalized);
     resetReconnectAttempts(normalized);
     clearPairingRequest(normalized);
     clientActivity.delete(normalized);
@@ -8150,15 +7918,10 @@ function scheduleReconnect(phone, ownerId = null, delay = RECONNECT_DELAY_MS) {
     const normalized = normalizePhone(phone);
     if (!normalized || reconnectTimers.has(normalized)) return;
 
-    const attemptNumber = bumpReconnectAttempts(normalized);
+    let attemptNumber = bumpReconnectAttempts(normalized);
     if (attemptNumber > MAX_RECONNECT_ATTEMPTS) {
-        clearReconnectTimer(normalized);
-        void cleanupSessionAfterReconnectFailure(
-            normalized,
-            ownerId || getPhoneOwner(normalized),
-            `تجاوز الحد الأقصى لمحاولات إعادة الاتصال (${MAX_RECONNECT_ATTEMPTS})`
-        );
-        return;
+        reconnectAttempts.set(normalized, 1);
+        attemptNumber = 1;
     }
 
     incrementAnalytics('totalReconnects');
@@ -9481,14 +9244,11 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
                 resetReconnectAttempts(normalizedPhone);
                 startPresenceKeepAlive(sock, normalizedPhone);
                 startSessionPing(sock, normalizedPhone);
-                const connectionMetadata = {
+                await touchMongoSessionState(normalizedPhone, {
                     ownerId: requestedOwnerId || getPhoneOwner(normalizedPhone) || '',
                     registered: true,
                     lastConnectedAt: new Date().toISOString()
-                };
-
-                await touchMongoSessionState(normalizedPhone, connectionMetadata);
-                await flushSessionSnapshotSync(normalizedPhone, connectionMetadata);
+                });
 
                 try {
                     await applyLivePhoneSettingsSideEffects(normalizedPhone);
@@ -9647,13 +9407,6 @@ async function initializeSessions() {
             if (session.ownerId) {
                 addLinkedNumber(session.ownerId, session.sessionId);
             }
-            const preparation = await ensureSessionStateReady(session.sessionId);
-            if (!preparation.ready) {
-                console.log(`⚠️ حذف جلسة غير صالحة أثناء الإقلاع: ${session.sessionId}`);
-                await purgeSessionData(session.sessionId);
-                return;
-            }
-
             await startWhatsApp(session.sessionId, null, session.ownerId || getPhoneOwner(session.sessionId), null, {
                 autoRequestPairingCode: false,
                 bootRestore: true
@@ -13168,20 +12921,6 @@ async function gracefulShutdown(signal) {
         }
     }
     pairingRequests.clear();
-
-    try {
-        await flushAllSessionSnapshotSync();
-    } catch (error) {
-        console.error('Session Flush Warning:', error.message || error);
-    }
-
-    for (const [phone, sock] of waClients.entries()) {
-        try {
-            await flushSessionSnapshotSync(phone);
-        } catch (_) {}
-        try { sock.ws?.close?.(); } catch (_) {}
-        try { sock.end?.(); } catch (_) {}
-    }
 
     try {
         if (TELEGRAM_ENABLED && !USE_TELEGRAM_WEBHOOK) {
