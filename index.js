@@ -1994,18 +1994,232 @@ function getPhoneProfileMetaFile(phone) {
     return path.join(getPhoneProfileDir(phone), 'meta.json');
 }
 
+function getSessionPhoneProfileDir(phone) {
+    return getSessionStorageDir(phone);
+}
+
+function getSessionPhoneProfileSettingsFile(phone) {
+    return path.join(getSessionPhoneProfileDir(phone), 'phone-settings-profile.json');
+}
+
+function getSessionPhoneProfileCredentialsFile(phone) {
+    return path.join(getSessionPhoneProfileDir(phone), 'phone-settings-credentials.json');
+}
+
+function getSessionPhoneProfileMetaFile(phone) {
+    return path.join(getSessionPhoneProfileDir(phone), 'phone-settings-meta.json');
+}
+
+function mergePhoneProfileRecords(...records) {
+    const merged = {
+        activeAppId: 'default',
+        apps: {},
+        credentials: {}
+    };
+
+    for (const record of records) {
+        if (!record || typeof record !== 'object') continue;
+
+        const candidateActiveAppId = normalizeAppId(record.activeAppId || merged.activeAppId || 'default');
+        merged.activeAppId = candidateActiveAppId || merged.activeAppId || 'default';
+
+        const apps = record.apps && typeof record.apps === 'object' ? record.apps : {};
+        for (const [rawAppId, settings] of Object.entries(apps)) {
+            const appId = normalizeAppId(rawAppId);
+            merged.apps[appId] = {
+                ...cloneDefaultPhoneSettings(),
+                ...(merged.apps[appId] || {}),
+                ...(settings && typeof settings === 'object' ? cloneJsonValue(settings) : {})
+            };
+        }
+
+        const credentials = record.credentials && typeof record.credentials === 'object' ? record.credentials : {};
+        for (const [rawAppId, credential] of Object.entries(credentials)) {
+            const appId = normalizeAppId(rawAppId);
+            const currentCredential = merged.credentials[appId] || {};
+            const nextCredential = credential && typeof credential === 'object' ? cloneJsonValue(credential) : {};
+            merged.credentials[appId] = {
+                ...currentCredential,
+                ...nextCredential,
+                password: String(nextCredential.password || currentCredential.password || '').trim() || generateSettingsPassword(),
+                createdAt: nextCredential.createdAt || currentCredential.createdAt || new Date().toISOString(),
+                updatedAt: nextCredential.updatedAt || currentCredential.updatedAt || new Date().toISOString()
+            };
+        }
+    }
+
+    const appIds = Array.from(new Set([
+        normalizeAppId(merged.activeAppId || 'default'),
+        ...Object.keys(merged.apps || {}).map((item) => normalizeAppId(item)),
+        ...Object.keys(merged.credentials || {}).map((item) => normalizeAppId(item))
+    ].filter(Boolean)));
+
+    if (!appIds.length) {
+        appIds.push('default');
+    }
+
+    if (!merged.apps[merged.activeAppId]) {
+        const seedAppId = appIds.find((appId) => merged.apps[appId]) || 'default';
+        merged.apps[merged.activeAppId] = {
+            ...cloneDefaultPhoneSettings(),
+            ...(merged.apps[seedAppId] || {})
+        };
+    }
+
+    for (const appId of appIds) {
+        merged.apps[appId] = {
+            ...cloneDefaultPhoneSettings(),
+            ...(merged.apps[appId] || {})
+        };
+
+        const currentCredential = merged.credentials[appId] || {};
+        merged.credentials[appId] = {
+            ...currentCredential,
+            password: String(currentCredential.password || '').trim() || generateSettingsPassword(),
+            createdAt: currentCredential.createdAt || new Date().toISOString(),
+            updatedAt: currentCredential.updatedAt || new Date().toISOString()
+        };
+    }
+
+    return merged;
+}
+
+function readPhoneProfileFromDirectoryFiles(phone, files = {}) {
+    const normalizedPhone = normalizePhone(phone || files.phone || '');
+    if (!normalizedPhone) return null;
+
+    const settingsData = files.settingsFile ? readJsonFileFromDisk(files.settingsFile, null) : null;
+    const credentialsData = files.credentialsFile ? readJsonFileFromDisk(files.credentialsFile, null) : null;
+    const metaData = files.metaFile ? readJsonFileFromDisk(files.metaFile, null) : null;
+
+    if (!settingsData && !credentialsData && !metaData) {
+        return null;
+    }
+
+    return mergePhoneProfileRecords(
+        settingsData && typeof settingsData === 'object'
+            ? { activeAppId: settingsData.activeAppId, apps: settingsData.apps || settingsData.settings || {} }
+            : null,
+        credentialsData && typeof credentialsData === 'object'
+            ? { credentials: credentialsData.credentials || credentialsData }
+            : null,
+        metaData && typeof metaData === 'object'
+            ? { activeAppId: metaData.activeAppId || settingsData?.activeAppId || 'default' }
+            : null
+    );
+}
+
 function syncPhoneProfileToDirectory(phone, profile = {}) {
-    return profile;
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return profile;
+
+    const mergedProfile = mergePhoneProfileRecords(profile);
+    const sessionDir = getSessionPhoneProfileDir(normalizedPhone);
+    ensureDir(sessionDir);
+
+    writeJsonFileToDisk(getSessionPhoneProfileSettingsFile(normalizedPhone), {
+        phone: normalizedPhone,
+        activeAppId: mergedProfile.activeAppId,
+        apps: mergedProfile.apps,
+        updatedAt: new Date().toISOString()
+    });
+
+    writeJsonFileToDisk(getSessionPhoneProfileCredentialsFile(normalizedPhone), {
+        phone: normalizedPhone,
+        credentials: mergedProfile.credentials,
+        updatedAt: new Date().toISOString()
+    });
+
+    writeJsonFileToDisk(getSessionPhoneProfileMetaFile(normalizedPhone), {
+        phone: normalizedPhone,
+        activeAppId: mergedProfile.activeAppId,
+        appIds: Object.keys(mergedProfile.apps || {}),
+        updatedAt: new Date().toISOString()
+    });
+
+    return mergedProfile;
 }
 
 function hydratePhoneSettingsFromDirectories(db) {
     db.profiles = db.profiles || {};
+
+    const knownPhones = new Set(
+        Object.keys(db.profiles || {})
+            .map((phone) => normalizePhone(phone))
+            .filter(Boolean)
+    );
+
+    try {
+        ensureDir(SESSIONS_DIR);
+        const sessionDirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => normalizePhone(entry.name))
+            .filter(Boolean);
+        for (const phone of sessionDirs) {
+            knownPhones.add(phone);
+        }
+    } catch (_) {}
+
+    for (const phone of listPhoneProfileDirectories().map((item) => normalizePhone(item)).filter(Boolean)) {
+        knownPhones.add(phone);
+    }
+
+    let changed = false;
+    for (const phone of knownPhones) {
+        const mergedProfile = mergePhoneProfileRecords(
+            db.profiles[phone] || null,
+            readPhoneProfileFromDirectoryFiles(phone, {
+                phone,
+                settingsFile: getPhoneProfileSettingsFile(phone),
+                credentialsFile: getPhoneProfileCredentialsFile(phone),
+                metaFile: getPhoneProfileMetaFile(phone)
+            }),
+            readPhoneProfileFromDirectoryFiles(phone, {
+                phone,
+                settingsFile: getSessionPhoneProfileSettingsFile(phone),
+                credentialsFile: getSessionPhoneProfileCredentialsFile(phone),
+                metaFile: getSessionPhoneProfileMetaFile(phone)
+            })
+        );
+
+        if (!Object.keys(mergedProfile.apps || {}).length) continue;
+
+        const previousSerialized = JSON.stringify(db.profiles[phone] || {});
+        const nextSerialized = JSON.stringify(mergedProfile);
+        if (previousSerialized !== nextSerialized) {
+            db.profiles[phone] = mergedProfile;
+            changed = true;
+        }
+
+        if (!fs.existsSync(getSessionPhoneProfileSettingsFile(phone)) || !fs.existsSync(getSessionPhoneProfileCredentialsFile(phone))) {
+            syncPhoneProfileToDirectory(phone, mergedProfile);
+        }
+    }
+
+    if (changed) {
+        _phoneSettingsDBCache = db;
+        _phoneSettingsDBCacheAt = Date.now();
+    }
+
     return db;
 }
 
 function deletePhoneProfileDirectory(phone) {
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return;
+
+    const sessionProfileFiles = [
+        getSessionPhoneProfileSettingsFile(normalizedPhone),
+        getSessionPhoneProfileCredentialsFile(normalizedPhone),
+        getSessionPhoneProfileMetaFile(normalizedPhone)
+    ];
+
+    for (const filePath of sessionProfileFiles) {
+        try {
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch (_) {}
+    }
+
     try {
         fs.rmSync(path.join(PHONE_PROFILES_DIR, normalizedPhone), { recursive: true, force: true });
     } catch (_) {}
@@ -2549,14 +2763,33 @@ function cloneDefaultPhoneSettings() {
     return JSON.parse(JSON.stringify(DEFAULT_PHONE_SETTINGS));
 }
 
+let _phoneSettingsDBCache = null;
+let _phoneSettingsDBCacheAt = 0;
+const PHONE_SETTINGS_DB_CACHE_TTL_MS = 2000;
+
+function invalidatePhoneSettingsDBCache() {
+    _phoneSettingsDBCache = null;
+    _phoneSettingsDBCacheAt = 0;
+}
+
 function getPhoneSettingsDB() {
+    const now = Date.now();
+    if (_phoneSettingsDBCache && (now - _phoneSettingsDBCacheAt) < PHONE_SETTINGS_DB_CACHE_TTL_MS) {
+        return _phoneSettingsDBCache;
+    }
+
     const db = readJSON(PHONE_SETTINGS_FILE, { profiles: {} });
     db.profiles = db.profiles || {};
-    return hydratePhoneSettingsFromDirectories(db);
+    const hydrated = hydratePhoneSettingsFromDirectories(db);
+    _phoneSettingsDBCache = hydrated;
+    _phoneSettingsDBCacheAt = now;
+    return hydrated;
 }
 
 function savePhoneSettingsDB(db) {
     db.profiles = db.profiles || {};
+    _phoneSettingsDBCache = db;
+    _phoneSettingsDBCacheAt = Date.now();
     writeJSON(PHONE_SETTINGS_FILE, db);
     for (const [phone, profile] of Object.entries(db.profiles)) {
         syncPhoneProfileToDirectory(phone, profile);
