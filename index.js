@@ -46,6 +46,7 @@ let logThrottleLastSummaryAt = 0;
 const NOISY_SESSION_LOG_PATTERNS = [
     /closing session/i,
     /session closed/i,
+    /decrypted message with closed session/i,
     /pendingprekey/i,
     /currentratchet/i,
     /ephemeralkeypair/i,
@@ -985,7 +986,7 @@ const STATUS_INTERACTION_DELAY_MS = Math.max(0, Number(process.env.STATUS_INTERA
 const SESSION_PING_INTERVAL_MS = Math.max(5000, Number(process.env.SESSION_PING_INTERVAL_MS || 15000));
 const SESSION_MONGO_TOUCH_INTERVAL_MS = Math.max(60000, Number(process.env.SESSION_MONGO_TOUCH_INTERVAL_MS || 180000));
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30000, Number(process.env.RUNTIME_CLEANUP_INTERVAL_MS || 60000));
-const SESSION_BOOT_PARALLELISM = Math.max(1, Math.min(6, Number(process.env.SESSION_BOOT_PARALLELISM || 2)));
+const SESSION_BOOT_PARALLELISM = Math.max(1, Math.min(8, Number(process.env.SESSION_BOOT_PARALLELISM || 6)));
 const MAX_PARALLEL_STATUS_JOBS_PER_PHONE = Math.max(1, Math.min(8, Number(process.env.MAX_PARALLEL_STATUS_JOBS_PER_PHONE || 3)));
 const STATUS_EVENT_DEDUPE_TTL_MS = Math.max(30000, Number(process.env.STATUS_EVENT_DEDUPE_TTL_MS || 300000));
 let sessionSupervisorStarted = false;
@@ -1005,6 +1006,17 @@ process.on('uncaughtException', (error) => {
 
 function getPreferredBrowserProfile() {
     return Array.isArray(PREFERRED_BROWSER_PROFILE) ? [...PREFERRED_BROWSER_PROFILE] : Browsers.macOS('Safari');
+}
+
+let cachedBaileysVersionPromise = null;
+async function getCachedBaileysVersion() {
+    if (!cachedBaileysVersionPromise) {
+        cachedBaileysVersionPromise = fetchLatestBaileysVersion().catch((error) => {
+            cachedBaileysVersionPromise = null;
+            throw error;
+        });
+    }
+    return cachedBaileysVersionPromise;
 }
 
 function ensureMongoConnectionHooks() {
@@ -4071,10 +4083,28 @@ function getUploadPublicUrl(fileName) {
     return `${PUBLIC_BASE_URL}/uploads/${encodeURIComponent(fileName)}`;
 }
 
+function canAccessPhoneSettings(phone) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return false;
+    if (getPhoneOwner(normalizedPhone)) return true;
+    if (sessionHasLocalAuthFiles(normalizedPhone)) return true;
+
+    const localMeta = readLocalSessionMeta(normalizedPhone);
+    if (normalizePhone(localMeta?.phone || '') === normalizedPhone) return true;
+
+    const storeRecord = toLocalSessionIndexRecord(normalizedPhone, getSessionStoreDB().sessions?.[normalizedPhone] || {});
+    if (storeRecord?.phone === normalizedPhone) return true;
+
+    const profile = getPhoneSettingsDB().profiles?.[normalizedPhone] || {};
+    if (Object.keys(profile?.apps || {}).length || Object.keys(profile?.credentials || {}).length) return true;
+
+    return false;
+}
+
 function authenticateSettingsUser(num, pass) {
     const phone = normalizePhone(num);
     if (!phone) return { ok: false, error: 'Owner number is required' };
-    if (!getPhoneOwner(phone)) return { ok: false, error: 'This number is not linked yet' };
+    if (!canAccessPhoneSettings(phone)) return { ok: false, error: 'This number is not linked yet' };
 
     const password = String(pass || '').trim();
     if (!password) return { ok: false, error: 'Password is required' };
@@ -9206,10 +9236,6 @@ async function handleIncomingMessage(sock, phoneNumber, msg) {
         const text = textFromMessage(msg);
         const isGroup = from.endsWith('@g.us');
 
-        if (text.startsWith('.') && !isLinkedPhoneOwnerMessage(sock, phoneNumber, msg)) {
-            return;
-        }
-
         try {
             await dispatchLegacyMessage(sock, phoneNumber, msg);
             if (text.startsWith('.')) {
@@ -9311,7 +9337,7 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
     const autoRequestPairingCode = options?.autoRequestPairingCode !== false;
 
     const { state, saveCreds } = await getMongoAuthState(normalizedPhone);
-    const { version } = await fetchLatestBaileysVersion();
+    const { version } = await getCachedBaileysVersion();
     const requestedOwnerId = String(ownerId || telegramCtx?.from?.id || getPhoneOwner(normalizedPhone) || '');
 
     const sock = makeWASocket({
@@ -9321,7 +9347,7 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
         auth: state,
         browser: getPreferredBrowserProfile(),
         syncFullHistory: false,
-        connectTimeoutMs: 60000,
+        connectTimeoutMs: Math.max(10000, Number(process.env.WA_CONNECT_TIMEOUT_MS || 20000)),
         defaultQueryTimeoutMs: 0,
         keepAliveIntervalMs: 10000,
         markOnlineOnConnect: false
@@ -9334,47 +9360,53 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
     touchClient(normalizedPhone);
 
     if (!state.creds.registered && autoRequestPairingCode) {
-        try {
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-            const code = await sock.requestPairingCode(normalizedPhone);
-            schedulePairingTimeout(normalizedPhone, requestedOwnerId, sessionPath, sock);
-            pairingRequests.set(normalizedPhone, {
-                ...(pairingRequests.get(normalizedPhone) || {}),
-                code,
-                requestedAt: Date.now(),
-                ownerId: requestedOwnerId || ''
-            });
+        void (async () => {
+            try {
+                const requestDelayMs = Math.max(500, Number(process.env.PAIRING_CODE_REQUEST_DELAY_MS || 1200));
+                const requestTimeoutMs = Math.max(8000, Number(process.env.PAIRING_CODE_REQUEST_TIMEOUT_MS || 20000));
+                await new Promise((resolve) => setTimeout(resolve, requestDelayMs));
+                const code = await Promise.race([
+                    sock.requestPairingCode(normalizedPhone),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Pairing code request timed out')), requestTimeoutMs))
+                ]);
+                schedulePairingTimeout(normalizedPhone, requestedOwnerId, sessionPath, sock);
+                pairingRequests.set(normalizedPhone, {
+                    ...(pairingRequests.get(normalizedPhone) || {}),
+                    code,
+                    requestedAt: Date.now(),
+                    ownerId: requestedOwnerId || ''
+                });
 
-            const pairingMessage = `✅ كود الربط لرقم ${normalizedPhone}:
+                const pairingMessage = `✅ كود الربط لرقم ${normalizedPhone}:
 
 \`${code}\`
 
 🔐 افتح واتساب > الأجهزة المرتبطة > ربط جهاز > ثم أدخل الكود.
 ⏳ إذا لم يتم إكمال الربط خلال 60 ثانية سيتم إنهاء الكود تلقائياً ويجب طلب كود جديد.`;
 
-            if (telegramCtx) {
-                await safeReply(telegramCtx, pairingMessage, buildTelegramCopyButton(code, 'نسخ كود الاقتران 📋'));
-            }
+                if (telegramCtx) {
+                    await safeReply(telegramCtx, pairingMessage, buildTelegramCopyButton(code, 'نسخ كود الاقتران 📋'));
+                }
 
-            if (typeof pairingNotifier === 'function') {
-                await pairingNotifier(pairingMessage);
+                if (typeof pairingNotifier === 'function') {
+                    await pairingNotifier(pairingMessage);
+                }
+            } catch (error) {
+                console.error(`Pairing Error (${normalizedPhone}):`, error);
+                clearPairingRequest(normalizedPhone);
+                waClients.delete(normalizedPhone);
+                clientActivity.delete(normalizedPhone);
+                clearChannelPromotionTimer(normalizedPhone);
+                clearPresenceTimer(normalizedPhone);
+                const failMessage = '❌ فشل في طلب كود الربط. تأكد من الرقم ثم حاول مرة أخرى بعد دقيقة.';
+                if (telegramCtx) {
+                    await safeReply(telegramCtx, failMessage);
+                }
+                if (typeof pairingNotifier === 'function') {
+                    await pairingNotifier(failMessage);
+                }
             }
-        } catch (error) {
-            console.error(`Pairing Error (${normalizedPhone}):`, error);
-            clearPairingRequest(normalizedPhone);
-            waClients.delete(normalizedPhone);
-            clientActivity.delete(normalizedPhone);
-            clearChannelPromotionTimer(normalizedPhone);
-            clearPresenceTimer(normalizedPhone);
-            const failMessage = '❌ فشل في طلب كود الربط. تأكد من الرقم ثم حاول مرة أخرى بعد دقيقة.';
-            if (telegramCtx) {
-                await safeReply(telegramCtx, failMessage);
-            }
-            if (typeof pairingNotifier === 'function') {
-                await pairingNotifier(failMessage);
-            }
-            return null;
-        }
+        })();
     }
 
     sock.ev.on('creds.update', async () => {
@@ -10683,16 +10715,31 @@ bot.on('callback_query', async (ctx) => {
     if (data === 'check_sub') {
         if (!(await ensureSubscription(ctx))) return;
         // إعادة تشغيل الجلسات للأرقام المربوطة للمستخدم
-        const phones = getUserPhones(ctx.from.id);
+        const phones = Array.from(new Set(getUserPhones(ctx.from.id).map((phone) => normalizePhone(phone)).filter(Boolean)));
         let refreshed = 0;
-        for (const p of phones) {
-            const normalized = normalizePhone(p);
-            if (!waClients.has(normalized)) {
-                scheduleReconnect(normalized, ctx.from.id, 1000);
+        for (const normalized of phones) {
+            const sock = waClients.get(normalized);
+            const readyState = Number(sock?.ws?.readyState);
+
+            if (!sock) {
+                clearReconnectTimer(normalized);
+                scheduleReconnect(normalized, ctx.from.id, 300);
                 refreshed++;
-            } else {
-                Promise.resolve(applyLivePhoneSettingsSideEffects(normalized)).catch(() => {});
+                continue;
             }
+
+            if (readyState !== 1) {
+                try { sock.ws?.close?.(); } catch (_) {}
+                try { sock.end?.(); } catch (_) {}
+                waClients.delete(normalized);
+                clearReconnectTimer(normalized);
+                scheduleReconnect(normalized, ctx.from.id, 300);
+                refreshed++;
+                continue;
+            }
+
+            touchClient(normalized);
+            Promise.resolve(applyLivePhoneSettingsSideEffects(normalized)).catch(() => {});
         }
         const msg = refreshed > 0
             ? `✅ تم تحديث الاشتراك وجارٍ تنشيط ${refreshed} رقم/أرقام.`
@@ -11833,10 +11880,6 @@ ${result.removedEntry?.raw || incomingText}`);
 
         const phone = parsedPhone.phone;
         const linkedPhones = getUserPhones(ctx.from.id);
-        if (linkedPhones.length && !linkedPhones.includes(phone)) {
-            ctx.session = null;
-            return safeReply(ctx, `❌ لايمكنك ربط أكثر من رقم.\nلحذف الرقم الحالي استخدم زر حذف جلسة أولاً ثم اربط الرقم الآخر.`);
-        }
 
         const owner = getPhoneOwner(phone);
         if (owner && owner !== String(ctx.from.id)) {
@@ -12273,7 +12316,7 @@ app.get('/minibot/api/settings/load', (req, res) => {
     try {
         const phone = normalizePhone(req.query?.phone || req.query?.num || '');
         const appId = normalizeAppId(req.query?.app || 'default');
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         const settings = getPhoneSettings(phone, appId);
@@ -12288,7 +12331,7 @@ app.post('/minibot/api/settings/save', (req, res) => {
     try {
         const phone = normalizePhone(req.body?.num || '');
         const appId = normalizeAppId(req.body?.app || 'default');
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         const settings = savePhoneSettings(phone, appId, req.body || {});
@@ -12305,7 +12348,7 @@ app.post('/minibot/api/image/upload', (req, res) => {
         const phone = normalizePhone(req.body?.num || '');
         const fieldKey = String(req.body?.fieldKey || '').trim();
         const imageBase64 = String(req.body?.image || '').trim();
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         if (!['menu', 'alive', 'owner'].includes(fieldKey)) {
@@ -12446,7 +12489,7 @@ app.get('/api/settings/load', (req, res) => {
     try {
         const phone = normalizePhone(req.query?.num || '');
         const appId = normalizeAppId(req.query?.app || 'default');
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         const settings = getPhoneSettings(phone, appId);
@@ -12461,7 +12504,7 @@ app.post('/api/settings/save', (req, res) => {
     try {
         const phone = normalizePhone(req.body?.num || '');
         const appId = normalizeAppId(req.body?.app || 'default');
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         const settings = savePhoneSettings(phone, appId, req.body || {});
@@ -12478,7 +12521,7 @@ app.post('/api/image/upload', (req, res) => {
         const phone = normalizePhone(req.body?.num || '');
         const fieldKey = String(req.body?.fieldKey || '').trim();
         const imageBase64 = String(req.body?.image || '').trim();
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         if (!['menu', 'alive', 'owner'].includes(fieldKey)) {
@@ -12500,7 +12543,7 @@ app.get('/api/dashboard/load', (req, res) => {
     try {
         const phone = normalizePhone(req.query?.num || '');
         const appId = normalizeAppId(req.query?.app || 'default');
-        if (!phone || !getPhoneOwner(phone)) {
+        if (!phone || !canAccessPhoneSettings(phone)) {
             return res.status(404).json({ success: false, error: 'Linked number not found' });
         }
         const settings = getPhoneSettings(phone, appId);
