@@ -1,3 +1,5 @@
+require('dotenv').config();
+
  const {
     default: makeWASocket,
     fetchLatestBaileysVersion,
@@ -1693,7 +1695,7 @@ async function getMongoAuthState(phone) {
 
 
 async function restorePersistentFilesFromMongo() {
-    const files = [USERS_FILE, SETTINGS_FILE, PHONE_SETTINGS_FILE, BOT_ANALYTICS_FILE, STATUS_BACKUPS_FILE, STATUS_ARCHIVE_FILE, PROFILE_SCHEDULE_FILE, CONTACTS_ARCHIVE_FILE, DELETED_MESSAGES_ARCHIVE_FILE];
+    const files = [USERS_FILE, SETTINGS_FILE, PHONE_SETTINGS_FILE, SESSION_STORE_FILE, BOT_ANALYTICS_FILE, STATUS_BACKUPS_FILE, STATUS_ARCHIVE_FILE, PROFILE_SCHEDULE_FILE, CONTACTS_ARCHIVE_FILE, DELETED_MESSAGES_ARCHIVE_FILE];
     for (const filePath of files) {
         await restoreJsonMirror(filePath);
     }
@@ -1738,7 +1740,9 @@ function writeJSON(filePath, data) {
     const pathKey = getJsonMirrorPathKey(filePath);
     const cloned = cloneJsonValue(data);
     JSON_MIRROR_CACHE.set(pathKey, cloned);
-    writeJsonFileToDisk(filePath, cloned);
+    void persistJsonMirror(filePath, cloned).catch((error) => {
+        console.error(`JSON Mirror Persist Error (${path.basename(filePath)}):`, error?.message || error);
+    });
 }
 
 function getDefaultSessionStoreDB() {
@@ -1811,10 +1815,11 @@ function sessionHasLocalAuthFiles(phone = '') {
     return listLocalSessionJsonFiles(phone).some((fileName) => fileName === 'creds.json' || fileName.startsWith('app-state-sync-') || fileName.startsWith('pre-key-') || fileName.startsWith('sender-key-') || fileName.startsWith('session-'));
 }
 
+const LOCAL_SESSION_PRUNE_ENABLED = ['1', 'true', 'yes', 'on'].includes(String(process.env.LOCAL_SESSION_PRUNE_ENABLED || 'false').trim().toLowerCase());
 const LOCAL_SESSION_FILE_LIMITS = Object.freeze({
-    prekey: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_PRE_KEYS || 60)),
-    session: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_SIGNAL_SESSIONS || 80)),
-    sender: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_SENDER_KEYS || 80))
+    prekey: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_PRE_KEYS || 10000)),
+    session: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_SIGNAL_SESSIONS || 10000)),
+    sender: Math.max(20, Number(process.env.LOCAL_SESSION_MAX_SENDER_KEYS || 10000))
 });
 
 function classifySessionJsonFile(fileName = '') {
@@ -1843,6 +1848,7 @@ function rankSessionJsonFilesForRetention(fileNames = []) {
 }
 
 function pruneSessionDirectoryFiles(phone = '') {
+    if (!LOCAL_SESSION_PRUNE_ENABLED) return false;
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return false;
     const sessionDir = getSessionStorageDir(normalizedPhone);
