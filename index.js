@@ -944,23 +944,26 @@ const DEFAULT_MONGODB_DB_NAME = String(process.env.MONGODB_DB_NAME || 'faresbot'
 const JSON_MIRROR_COLLECTION = String(process.env.JSON_MIRROR_COLLECTION || 'json_mirrors').trim() || 'json_mirrors';
 const MONGO_ONLY_STORAGE = true;
 const MONGO_CONNECT_TIMEOUT_MS = Math.max(5000, Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 30000));
-const STATUS_ARCHIVE_KEEP_PER_PHONE = Math.max(20, Number(process.env.STATUS_ARCHIVE_KEEP_PER_PHONE || 120));
+const STATUS_ARCHIVE_KEEP_PER_PHONE = Math.max(10, Number(process.env.STATUS_ARCHIVE_KEEP_PER_PHONE || 40));
+const STATUS_ARCHIVE_RETENTION_MS = Math.max(60 * 60 * 1000, Number(process.env.STATUS_ARCHIVE_RETENTION_MS || (12 * 60 * 60 * 1000)));
 const STATUS_MEDIA_COLLECTION = String(process.env.STATUS_MEDIA_COLLECTION || 'status_media_archive').trim() || 'status_media_archive';
-const ALLOW_STATUS_MEDIA_FILE_FALLBACK = true;
+const ALLOW_STATUS_MEDIA_FILE_FALLBACK = ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_STATUS_MEDIA_FILE_FALLBACK || 'false').trim().toLowerCase());
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = Math.max(5000, Number(process.env.SERVER_KEEP_ALIVE_TIMEOUT_MS || 65000));
 const SERVER_HEADERS_TIMEOUT_MS = Math.max(SERVER_KEEP_ALIVE_TIMEOUT_MS + 1000, Number(process.env.SERVER_HEADERS_TIMEOUT_MS || 66000));
 const SERVER_REQUEST_TIMEOUT_MS = Math.max(10000, Number(process.env.SERVER_REQUEST_TIMEOUT_MS || 120000));
 const PRESERVE_PERSISTENT_RUNTIME_DATA = ['1', 'true', 'yes', 'on'].includes(String(process.env.PRESERVE_PERSISTENT_RUNTIME_DATA || 'true').trim().toLowerCase());
 const PREFERRED_BROWSER_PROFILE = Object.freeze(['macOS', 'Safari', '17.4']);
-const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS || 15000);
-const CLIENT_STALE_AFTER_MS = Number(process.env.CLIENT_STALE_AFTER_MS || 180000);
+const HEALTH_CHECK_INTERVAL_MS = Math.max(1000, Number(process.env.HEALTH_CHECK_INTERVAL_MS || 1000));
+const CLIENT_STALE_AFTER_MS = Math.max(15000, Number(process.env.CLIENT_STALE_AFTER_MS || 45000));
 const STATUS_INTERACTION_DELAY_MS = Math.max(0, Number(process.env.STATUS_INTERACTION_DELAY_MS || 250));
-const SESSION_PING_INTERVAL_MS = Math.max(10000, Number(process.env.SESSION_PING_INTERVAL_MS || 25000));
+const SESSION_PING_INTERVAL_MS = Math.max(1000, Number(process.env.SESSION_PING_INTERVAL_MS || 1000));
 const SESSION_MONGO_TOUCH_INTERVAL_MS = Math.max(30000, Number(process.env.SESSION_MONGO_TOUCH_INTERVAL_MS || 60000));
+const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30000, Number(process.env.RUNTIME_CLEANUP_INTERVAL_MS || 30000));
 const SESSION_BOOT_PARALLELISM = Math.max(1, Math.min(8, Number(process.env.SESSION_BOOT_PARALLELISM || 3)));
 const MAX_PARALLEL_STATUS_JOBS_PER_PHONE = Math.max(1, Math.min(8, Number(process.env.MAX_PARALLEL_STATUS_JOBS_PER_PHONE || 3)));
 const STATUS_EVENT_DEDUPE_TTL_MS = Math.max(30000, Number(process.env.STATUS_EVENT_DEDUPE_TTL_MS || 300000));
 let sessionSupervisorStarted = false;
+let lastRuntimeCleanupAt = 0;
 const DATABASE_ENABLED = Boolean(MONGODB_URI);
 let mongoConnectionPromise = null;
 let mongoConnectionHooksInstalled = false;
@@ -7661,8 +7664,15 @@ function startSessionSupervisor() {
     sessionSupervisorStarted = true;
 
     const interval = setInterval(() => {
-        pruneExpiredStatusBackups();
-        pruneUploadsDir();
+        const now = Date.now();
+        if (!lastRuntimeCleanupAt || now - lastRuntimeCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
+            lastRuntimeCleanupAt = now;
+            pruneExpiredStatusBackups();
+            pruneStatusArchive();
+            pruneUploadsDir();
+            pruneProblematicRuntimeFiles();
+        }
+
         const phones = getAllLinkedPhones();
 
         for (const phone of phones) {
@@ -7673,29 +7683,42 @@ function startSessionSupervisor() {
             if (pending?.timedOut) continue;
 
             if (!sock) {
-                scheduleReconnect(normalized, getPhoneOwner(normalized), 3000);
+                scheduleReconnect(normalized, getPhoneOwner(normalized), 1000);
                 continue;
             }
 
             const readyState = Number(sock.ws?.readyState);
-            if (readyState === 0 || readyState === 1) {
+            if (readyState === 1) {
+                touchClient(normalized);
+                if (!sessionPingTimers.has(normalized)) {
+                    startSessionPing(sock, normalized);
+                }
+                if (getActivePhoneSettings(normalized).alwaysOnline === 'on' && !presenceTimers.has(normalized)) {
+                    startPresenceKeepAlive(sock, normalized);
+                }
+                continue;
+            }
+
+            if (readyState === 0) {
                 touchClient(normalized);
                 continue;
             }
 
             const lastSeen = clientActivity.get(normalized) || 0;
-            if (lastSeen && Date.now() - lastSeen > CLIENT_STALE_AFTER_MS) {
-                console.log(`Session Health Check Restart: ${normalized}`);
-                try {
-                    sock.ws?.close?.();
-                } catch (_) {}
-                try {
-                    sock.end?.();
-                } catch (_) {}
-                waClients.delete(normalized);
-                clearReconnectTimer(normalized);
-                scheduleReconnect(normalized, getPhoneOwner(normalized), 3000);
+            if (!lastSeen || now - lastSeen <= CLIENT_STALE_AFTER_MS) {
+                continue;
             }
+
+            console.log(`Session Health Check Restart: ${normalized}`);
+            try {
+                sock.ws?.close?.();
+            } catch (_) {}
+            try {
+                sock.end?.();
+            } catch (_) {}
+            waClients.delete(normalized);
+            clearReconnectTimer(normalized);
+            scheduleReconnect(normalized, getPhoneOwner(normalized), 1000);
         }
     }, HEALTH_CHECK_INTERVAL_MS);
 
@@ -7792,21 +7815,58 @@ async function streamToBuffer(stream) {
 // =========================
 // تنظيف دوري لملفات الرفع المؤقتة والرسائل من الذاكرة
 // =========================
+function pruneFilesOlderThan(dirPath, maxAgeMs, { recursive = true } = {}) {
+    try {
+        if (!dirPath || !fs.existsSync(dirPath)) return 0;
+        const now = Date.now();
+        let removed = 0;
+        for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+            const targetPath = path.join(dirPath, entry.name);
+            try {
+                if (entry.isDirectory()) {
+                    if (recursive) {
+                        removed += pruneFilesOlderThan(targetPath, maxAgeMs, { recursive });
+                    }
+                    const remaining = fs.readdirSync(targetPath);
+                    if (!remaining.length) {
+                        fs.rmSync(targetPath, { recursive: true, force: true });
+                    }
+                    continue;
+                }
+                const stat = fs.statSync(targetPath);
+                if (now - stat.mtimeMs >= maxAgeMs) {
+                    fs.rmSync(targetPath, { force: true });
+                    removed += 1;
+                }
+            } catch (_) {}
+        }
+        return removed;
+    } catch (_) {
+        return 0;
+    }
+}
+
+function pruneProblematicRuntimeFiles() {
+    const tempDirs = Array.from(new Set([
+        path.join(process.cwd(), 'temp'),
+        path.join(STORAGE_ROOT, 'temp'),
+        path.join(STORAGE_ROOT, 'tmp'),
+        process.env.TMPDIR,
+        process.env.TEMP,
+        process.env.TMP
+    ].filter(Boolean).map((value) => path.resolve(String(value)))));
+
+    for (const dirPath of tempDirs) {
+        pruneFilesOlderThan(dirPath, 5 * 60 * 1000);
+    }
+
+    pruneFilesOlderThan(STATUS_MEDIA_DIR, 10 * 60 * 1000);
+}
+
 function pruneUploadsDir() {
     try {
         if (!fs.existsSync(UPLOADS_DIR)) return;
-        const now = Date.now();
-        const maxAge = 30 * 60 * 1000; // 30 دقيقة
-        const files = fs.readdirSync(UPLOADS_DIR);
-        for (const file of files) {
-            const filePath = path.join(UPLOADS_DIR, file);
-            try {
-                const stat = fs.statSync(filePath);
-                if (now - stat.mtimeMs > maxAge) {
-                    fs.rmSync(filePath, { force: true });
-                }
-            } catch(_) {}
-        }
+        pruneFilesOlderThan(UPLOADS_DIR, 30 * 60 * 1000, { recursive: false });
     } catch(_) {}
 }
 
@@ -8516,6 +8576,25 @@ async function handlePublicLinkedNumberCommand(sock, phoneNumber, msg) {
     return false;
 }
 
+function isLinkedPhoneOwnerMessage(sock, phoneNumber, msg) {
+    if (msg?.key?.fromMe) return true;
+
+    const senderId = normalizeWhatsAppJid(msg?.key?.participant || msg?.participant || msg?.key?.remoteJid || '');
+    if (!senderId) return false;
+
+    const senderPhone = normalizePhone(senderId);
+    const ownUserId = normalizeWhatsAppJid(sock?.user?.id || '');
+    const ownPhone = normalizePhone(ownUserId || phoneNumber);
+    const ownLid = String(sock?.user?.lid || '').split(':')[0].split('@')[0];
+    const senderLid = senderId.includes('@lid') ? senderId.split('@')[0].split(':')[0] : '';
+
+    if (ownUserId && senderId === ownUserId) return true;
+    if (ownPhone && senderPhone && ownPhone == senderPhone) return true;
+    if (ownLid && senderLid && ownLid === senderLid) return true;
+
+    return false;
+}
+
 async function handleIncomingMessage(sock, phoneNumber, msg) {
     try {
         if (!msg?.message) return;
@@ -8542,6 +8621,10 @@ async function handleIncomingMessage(sock, phoneNumber, msg) {
 
         const text = textFromMessage(msg);
         const isGroup = from.endsWith('@g.us');
+
+        if (text.startsWith('.') && !isLinkedPhoneOwnerMessage(sock, phoneNumber, msg)) {
+            return;
+        }
 
         try {
             await dispatchLegacyMessage(sock, phoneNumber, msg);
@@ -9091,16 +9174,31 @@ function pruneStatusArchive(phone = '') {
     const targetPhone = normalizePhone(phone);
     const db = getStatusArchiveDB();
     const grouped = new Map();
+    const now = Date.now();
+    let changed = false;
 
     for (const [key, entry] of Object.entries(db.items || {})) {
         const entryPhone = normalizePhone(entry?.phone || '');
         if (!entryPhone) continue;
         if (targetPhone && entryPhone !== targetPhone) continue;
+
+        const expiresAt = Date.parse(entry?.deletedExpiresAt || entry?.expiresAt || 0);
+        if (expiresAt && expiresAt <= now) {
+            if (entry?.mediaId) {
+                void deleteStatusMediaDocument(entry.mediaId);
+            }
+            if (entry?.filePath && fs.existsSync(entry.filePath)) {
+                try { fs.rmSync(entry.filePath, { force: true }); } catch (_) {}
+            }
+            delete db.items[key];
+            changed = true;
+            continue;
+        }
+
         if (!grouped.has(entryPhone)) grouped.set(entryPhone, []);
         grouped.get(entryPhone).push([key, entry]);
     }
 
-    let changed = false;
     for (const [, items] of grouped.entries()) {
         items.sort((a, b) => Date.parse(b[1]?.createdAt || 0) - Date.parse(a[1]?.createdAt || 0));
         const overflow = items.slice(STATUS_ARCHIVE_KEEP_PER_PHONE);
@@ -9189,7 +9287,8 @@ async function archiveIncomingStatusForTelegram(sock, phoneNumber, msg) {
         mediaStorage: statusData.kind === 'text' ? 'inline' : '',
         mediaSize: 0,
         mediaSha1: '',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + STATUS_ARCHIVE_RETENTION_MS).toISOString()
     };
 
     if (statusData.kind !== 'text' && statusData.payload && typeof downloadContentFromMessage === 'function') {
@@ -9202,6 +9301,7 @@ async function archiveIncomingStatusForTelegram(sock, phoneNumber, msg) {
             const persisted = await persistStatusMediaFromBuffer('status_archive_media', archiveId, entry, buffer, {
                 archiveId,
                 createdAt: entry.createdAt,
+                expiresAt: entry.expiresAt,
                 phone: entry.phone,
                 participant: entry.participant,
                 participantPhone: entry.participantPhone,
