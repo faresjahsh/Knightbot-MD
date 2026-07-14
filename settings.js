@@ -6,7 +6,7 @@ const settings = {
   ownerNumber: '919876543210', // غيّر الرقم بدون + وبدون مسافات
   giphyApiKey: 'qnl7ssQChTdPjsKta2Ax2LMaGXz303tq',
   commandMode: 'public',
-  maxStoreMessages: 20,
+  maxStoreMessages: 10,
   storeWriteInterval: 10000,
   description: 'بوت واتساب لإدارة المجموعات والتحميل من السوشل ميديا والذكاء الاصطناعي.',
   version: '3.0.8',
