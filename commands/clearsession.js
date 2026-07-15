@@ -9,17 +9,22 @@ const ENABLE_PERSISTENT_LOCAL_STORAGE = ['1', 'true', 'yes', 'on'].includes(
 const STORAGE_ROOT = (() => {
     const projectRoot = process.cwd();
     const runtimeRoot = path.join(projectRoot, '.runtime');
+    const forceProjectStorage = !['0', 'false', 'no', 'off'].includes(String(process.env.FORCE_PROJECT_STORAGE || 'true').trim().toLowerCase());
     const candidates = [
+        projectRoot,
         process.env.BOT_STORAGE_ROOT,
         process.env.RAILWAY_VOLUME_MOUNT_PATH,
         process.env.RAILWAY_PERSISTENT_DIR,
         process.env.RENDER_DISK_MOUNT_PATH,
-        projectRoot,
         runtimeRoot
     ].map((item) => String(item || '').trim()).filter(Boolean);
 
+    if (forceProjectStorage) {
+        return projectRoot;
+    }
+
     if (!ENABLE_PERSISTENT_LOCAL_STORAGE) {
-        return candidates[candidates.length - 1] || runtimeRoot;
+        return runtimeRoot;
     }
 
     return candidates[0] || projectRoot;
