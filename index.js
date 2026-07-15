@@ -25,12 +25,14 @@ const {
     preloadLegacyProjectModules
 } = require('./lib/legacyCommandBridge');
 const { attachLinkingSiteRoutes } = require('./lib/linkingSite');
-const isRemoteSessionStoreEnabled = () => false;
-const listRemoteSessions = async () => [];
-const fetchRemoteSession = async () => null;
-const upsertRemoteSession = async () => false;
-const deleteRemoteSession = async () => false;
-const touchRemoteSession = async () => false;
+const {
+    isRemoteSessionStoreEnabled,
+    listRemoteSessions,
+    fetchRemoteSession,
+    upsertRemoteSession,
+    deleteRemoteSession,
+    touchRemoteSession
+} = require('./lib/remoteSessionStore');
 
 EventEmitter.defaultMaxListeners = 0;
 
@@ -376,9 +378,20 @@ const PHONE_SETTINGS_AUTH_TTL_MS = Number(process.env.PHONE_SETTINGS_AUTH_TTL_MS
 const STATUS_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.APP_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
 const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
-const DEFAULT_SITE_INFO_TEXT = `🌐 الموقع الرسمي: ${DEPLOYMENT_BASE_URL}
-⚙️ صفحة الإعدادات: ${DEPLOYMENT_BASE_URL}/settings
-🔗 API كود الاقتران: ${DEPLOYMENT_BASE_URL}/api/pairing`;
+const THIRD_LINKING_SITE_PATH = (() => {
+    const rawPath = String(process.env.THIRD_LINKING_SITE_PATH || '/faresbot').trim() || '/faresbot';
+    return rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+})();
+const THIRD_LINKING_SITE_URL = `${DEPLOYMENT_BASE_URL}${THIRD_LINKING_SITE_PATH}`;
+const LINKING_SITE_URL = `${DEPLOYMENT_BASE_URL}/linking-site`;
+const FREEBOT_SITE_URL = `${DEPLOYMENT_BASE_URL}/Freebot`;
+const DEFAULT_SITE_INFO_TEXT = [
+    `🌐 الموقع الرسمي: ${DEPLOYMENT_BASE_URL}`,
+    `🆕 الموقع الثالث: ${THIRD_LINKING_SITE_URL}`,
+    `🧩 موقع الربط: ${FREEBOT_SITE_URL}`,
+    `⚙️ صفحة الإعدادات: ${DEPLOYMENT_BASE_URL}/settings`,
+    `🔗 API كود الاقتران: ${DEPLOYMENT_BASE_URL}/api/pairing`
+].join('\n');
 const SITE_ENDPOINTS = {
     target_site_base_url: DEPLOYMENT_BASE_URL,
     target_settings_page_url: `${DEPLOYMENT_BASE_URL}/settings`,
@@ -858,6 +871,10 @@ const DEFAULT_PUBLIC_LINKED_COMMAND_MESSAGE = [
     '',
     '📢 قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
+    '🆕 الموقع الثالث:',
+    '{thirdSite}',
+    '🧩 موقع الربط:',
+    '{freebotSite}',
     '⚙️ رابط الإعدادات:',
     `${DEPLOYMENT_BASE_URL}/settings`,
     '',
@@ -868,6 +885,10 @@ const DEFAULT_LINKED_WELCOME_MESSAGE = [
     '✅ تم تسجيل رقمك بنجاح.',
     '📢 اشترك في قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
+    '🆕 الموقع الثالث:',
+    '{thirdSite}',
+    '🧩 موقع الربط:',
+    '{freebotSite}',
     '⚙️ رابط الإعدادات:',
     `${DEPLOYMENT_BASE_URL}/settings`
 ].join('\n');
@@ -1429,7 +1450,49 @@ function extractSessionIdFromMongoDocument(doc = {}) {
 }
 
 async function getStoredMongoSessionEntries() {
-    return listLocalSessionEntries();
+    const merged = new Map();
+    const localEntries = await listLocalSessionEntries();
+
+    for (const entry of localEntries) {
+        const phone = normalizePhone(entry?.phone || entry?.sessionId || '');
+        if (!phone) continue;
+        merged.set(phone, {
+            phone,
+            sessionId: phone,
+            ownerId: String(entry?.ownerId || '').trim(),
+            registered: entry?.registered === true,
+            lastConnectedAt: entry?.lastConnectedAt || null,
+            updatedAt: entry?.updatedAt || entry?.lastConnectedAt || null,
+            source: 'local'
+        });
+    }
+
+    if (isRemoteSessionStoreEnabled()) {
+        try {
+            const remoteEntries = await listRemoteSessions();
+            for (const entry of remoteEntries || []) {
+                const phone = normalizePhone(entry?.phone || entry?.sessionId || '');
+                if (!phone) continue;
+                const current = merged.get(phone) || {};
+                const currentDate = Date.parse(current?.updatedAt || current?.lastConnectedAt || 0) || 0;
+                const remoteDate = Date.parse(entry?.updatedAt || entry?.lastConnectedAt || 0) || 0;
+                const preferRemote = !currentDate || remoteDate >= currentDate;
+                merged.set(phone, {
+                    phone,
+                    sessionId: phone,
+                    ownerId: String((preferRemote ? entry?.ownerId : current?.ownerId) || entry?.ownerId || current?.ownerId || '').trim(),
+                    registered: preferRemote ? entry?.registered === true : current?.registered === true,
+                    lastConnectedAt: (preferRemote ? entry?.lastConnectedAt : current?.lastConnectedAt) || entry?.lastConnectedAt || current?.lastConnectedAt || null,
+                    updatedAt: (preferRemote ? entry?.updatedAt : current?.updatedAt) || entry?.updatedAt || current?.updatedAt || null,
+                    source: current?.source === 'local' ? 'local+remote' : 'remote'
+                });
+            }
+        } catch (error) {
+            console.error('Remote Session List Error:', error?.message || error);
+        }
+    }
+
+    return Array.from(merged.values()).sort((a, b) => (Date.parse(b?.updatedAt || b?.lastConnectedAt || 0) || 0) - (Date.parse(a?.updatedAt || a?.lastConnectedAt || 0) || 0));
 }
 
 async function getMongoAuthState(phone) {
@@ -2771,6 +2834,9 @@ function formatLinkedTemplate(template, phone = '') {
         .replaceAll('{prefix}', String(phoneSettings.prefix || DEFAULT_PHONE_SETTINGS.prefix || '.'))
         .replaceAll('{botLink}', String(botLink || ''))
         .replaceAll('{channelLink}', WHATSAPP_CHANNEL_LINK)
+        .replaceAll('{thirdSite}', THIRD_LINKING_SITE_URL)
+        .replaceAll('{freebotSite}', FREEBOT_SITE_URL)
+        .replaceAll('{linkingSite}', LINKING_SITE_URL)
         .trim();
 }
 
@@ -2910,7 +2976,9 @@ function buildPhoneSettingsAccessMessage(phone, appId = null) {
     return [
         `🔐 بيانات دخول لوحة إعدادات الرقم ${credential.phone}`,
         '',
-        `🌐 الرابط: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `🌐 رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `🆕 الموقع الثالث: ${THIRD_LINKING_SITE_URL}`,
+        `🧩 موقع الربط: ${FREEBOT_SITE_URL}`,
         `📱 الرقم: ${credential.phone}`,
         `🗝️ كلمة السر: ${credential.password}`,
         '',
@@ -6264,6 +6332,39 @@ function getDashboardStats(phone) {
     };
 }
 
+function buildLinkingSiteSummaryExtras() {
+    const analytics = getAnalyticsDB();
+    const linkedPhones = Array.from(new Set(getAllLinkedPhones().map((phone) => normalizePhone(phone)).filter(Boolean)));
+    const onlineBots = linkedPhones.filter((phone) => waClients.has(phone)).length;
+    const storedSessions = Object.keys(getSessionStoreDB().sessions || {}).length;
+    let commandsCount = 0;
+    try {
+        commandsCount = fs.readdirSync(path.join(__dirname, 'commands')).filter((name) => name.endsWith('.js')).length;
+    } catch (_) {}
+
+    return {
+        onlineBots,
+        storedSessions,
+        commandsCount,
+        analytics: {
+            totalIncomingMessages: Number(analytics.totalIncomingMessages || 0),
+            totalStatusEvents: Number(analytics.totalStatusEvents || 0),
+            totalStatusReactions: Number(analytics.totalStatusReactions || 0),
+            totalOwnerReplies: Number(analytics.totalOwnerReplies || 0),
+            totalReconnects: Number(analytics.totalReconnects || 0),
+            totalSessionsStarted: Number(analytics.totalSessionsStarted || 0)
+        },
+        routes: {
+            main: DEPLOYMENT_BASE_URL,
+            linkingSite: LINKING_SITE_URL,
+            freebot: FREEBOT_SITE_URL,
+            thirdSite: THIRD_LINKING_SITE_URL,
+            settings: SITE_ENDPOINTS.target_settings_page_url,
+            pairing: buildPairingApiDescriptor('').endpoint
+        }
+    };
+}
+
 function isAdmin(userId) {
     const settings = getSettings();
     return (settings.admins || []).map(String).includes(String(userId));
@@ -7965,15 +8066,14 @@ async function cleanupSessionAfterReconnectFailure(phone, ownerId = null, reason
         waClients.delete(normalized);
     }
 
-    await deleteMongoSessionState(normalized);
-    deletePhoneSettings(normalized);
-    clearPhoneSettingsAuthForPhone(normalized);
-    removeLinkedNumber(normalized);
-
     if (resolvedOwnerId) {
         const suffix = reason ? `
 السبب: ${reason}` : '';
-        await notifyTelegramUser(resolvedOwnerId, `⚠️ تم حذف جلسة الرقم ${normalized} من البوت لأن إعادة الاتصال فشلت مرتين ولم يتم الاتصال بواتساب.${suffix}`);
+        await notifyTelegramUser(
+            resolvedOwnerId,
+            `⚠️ توقفت محاولة إعادة الاتصال التلقائي مؤقتاً للرقم ${normalized}.${suffix}
+✅ تم الاحتفاظ بالجلسة والملفات والإعدادات كما هي، وسيستطيع البوت استعادتها تلقائياً عند التشغيل التالي أو عند توفر الاتصال من جديد.`
+        );
     }
 
     return true;
@@ -7985,13 +8085,8 @@ function scheduleReconnect(phone, ownerId = null, delay = RECONNECT_DELAY_MS) {
 
     const attemptNumber = bumpReconnectAttempts(normalized);
     if (attemptNumber > MAX_RECONNECT_ATTEMPTS) {
-        clearReconnectTimer(normalized);
-        void cleanupSessionAfterReconnectFailure(
-            normalized,
-            ownerId || getPhoneOwner(normalized),
-            `تجاوز الحد الأقصى لمحاولات إعادة الاتصال (${MAX_RECONNECT_ATTEMPTS})`
-        );
-        return;
+        console.warn(`Reconnect attempts exceeded for ${normalized}; session will be preserved and retries will continue.`);
+        resetReconnectAttempts(normalized);
     }
 
     incrementAnalytics('totalReconnects');
@@ -8004,7 +8099,7 @@ function scheduleReconnect(phone, ownerId = null, delay = RECONNECT_DELAY_MS) {
             console.error(`Reconnect Error (${normalized}) [attempt ${attemptNumber}]:`, error.message);
             scheduleReconnect(normalized, ownerId || getPhoneOwner(normalized), RECONNECT_DELAY_MS);
         }
-    }, delay);
+    }, Math.max(RECONNECT_DELAY_MS, Number(delay) || RECONNECT_DELAY_MS));
 
     if (typeof timer.unref === 'function') {
         timer.unref();
@@ -9484,8 +9579,7 @@ async function initializeSessions() {
             }
             const preparation = await ensureSessionStateReady(session.sessionId);
             if (!preparation.ready) {
-                console.log(`⚠️ حذف جلسة غير صالحة أثناء الإقلاع: ${session.sessionId}`);
-                await purgeSessionData(session.sessionId);
+                console.log(`⚠️ تعذر تشغيل جلسة ${session.sessionId} أثناء الإقلاع حالياً، سيتم الاحتفاظ بها للمحاولة لاحقاً.`);
                 return;
             }
 
@@ -9499,8 +9593,7 @@ async function initializeSessions() {
             const errorText = String(error?.data || error?.message || error?.stack || '').toLowerCase();
             const shouldDeleteSession = statusCode === 401 || /(decrypt|decryption|failed to decrypt|cannot decrypt|closed session|session closed|no session|prekey|pre-key|bad mac|invalid mac|message counter|stale key|sender key)/i.test(errorText);
             if (shouldDeleteSession) {
-                console.log(`⚠️ حذف جلسة تالفة أثناء الإقلاع: ${session.sessionId}`);
-                await purgeSessionData(session.sessionId);
+                console.log(`⚠️ جلسة ${session.sessionId} واجهت ملفات غير متوافقة أثناء الإقلاع، وتم الاحتفاظ بها لإعادة المحاولة أو الاستعادة من التخزين البعيد.`);
             }
         }
     });
@@ -12093,8 +12186,10 @@ attachLinkingSiteRoutes(app, {
     getAllLinkedPhones,
     getAllUserIds,
     buildPairingApiDescriptor,
-    siteName: 'موقع الربط',
-    routeBase: '/linking-site',
+    getSummaryExtras: buildLinkingSiteSummaryExtras,
+    siteName: 'Fares Bot',
+    routeBase: THIRD_LINKING_SITE_PATH,
+    aliases: ['/linking-site', '/Freebot', THIRD_LINKING_SITE_PATH],
     adminPassword: SITE_PASSWORD
 });
 
