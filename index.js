@@ -780,17 +780,22 @@ const ENABLE_PERSISTENT_LOCAL_STORAGE = ['1', 'true', 'yes', 'on'].includes(Stri
 const STORAGE_ROOT = (() => {
     const projectRoot = process.cwd();
     const runtimeRoot = path.join(projectRoot, '.runtime');
+    const forceProjectStorage = !['0', 'false', 'no', 'off'].includes(String(process.env.FORCE_PROJECT_STORAGE || 'true').trim().toLowerCase());
     const candidates = [
+        projectRoot,
         process.env.BOT_STORAGE_ROOT,
         process.env.RAILWAY_VOLUME_MOUNT_PATH,
         process.env.RAILWAY_PERSISTENT_DIR,
         process.env.RENDER_DISK_MOUNT_PATH,
-        projectRoot,
         runtimeRoot
     ].map((item) => String(item || '').trim()).filter(Boolean);
 
+    if (forceProjectStorage) {
+        return projectRoot;
+    }
+
     if (!ENABLE_PERSISTENT_LOCAL_STORAGE) {
-        return candidates[candidates.length - 1] || runtimeRoot;
+        return runtimeRoot;
     }
 
     return candidates[0] || projectRoot;
@@ -1395,18 +1400,44 @@ async function touchMongoSessionState(phone, metadata = {}) {
     return true;
 }
 
-async function deleteMongoSessionState(phone) {
+async function deleteMongoSessionState(phone, options = {}) {
     const rawPhone = String(phone || '').trim();
     const normalizedPhone = normalizePhone(rawPhone);
     const sessionKey = normalizedPhone || rawPhone || 'default';
+    const preserveLocalIndex = options.preserveLocalIndex === true;
+    const preservePhoneSettings = options.preservePhoneSettings === true;
+    const preserveSessionMeta = options.preserveSessionMeta !== false && preserveLocalIndex;
     const sessionDir = getSessionStorageDir(sessionKey);
-    try {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    } catch (error) {
-        console.error(`⚠️ تعذر حذف الجلسة المحلية ${sessionKey}:`, error.message || error);
-    }
 
-    deleteSessionStoreRecordLocal(sessionKey);
+    if (preserveLocalIndex || preservePhoneSettings) {
+        clearSessionAuthDirectory(sessionKey, {
+            preservePhoneSettings,
+            preserveSessionMeta,
+            ownerId: options.ownerId || ''
+        });
+
+        const store = getSessionStoreDB();
+        const current = toLocalSessionIndexRecord(sessionKey, store.sessions?.[sessionKey] || {}) || toLocalSessionIndexRecord(sessionKey, {});
+        store.sessions[sessionKey] = {
+            ...current,
+            phone: sessionKey,
+            sessionId: sessionKey,
+            ownerId: String(options.ownerId || current?.ownerId || getPhoneOwner(sessionKey) || '').trim(),
+            registered: false,
+            updatedAt: new Date().toISOString(),
+            fileCount: listLocalSessionJsonFiles(sessionKey).length,
+            lastConnectedAt: current?.lastConnectedAt || null
+        };
+        saveSessionStoreDB(store);
+    } else {
+        try {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        } catch (error) {
+            console.error(`⚠️ تعذر حذف الجلسة المحلية ${sessionKey}:`, error.message || error);
+        }
+
+        deleteSessionStoreRecordLocal(sessionKey);
+    }
 
     if (normalizedPhone && isRemoteSessionStoreEnabled()) {
         try {
@@ -7916,9 +7947,59 @@ function shouldDiscardCorruptedBootSession(lastDisconnect = null) {
     return isTransientCryptoDisconnect(lastDisconnect);
 }
 
-async function purgeSessionData(phone) {
+function clearSessionAuthDirectory(phone, options = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return { removed: 0, kept: [] };
+
+    const preservePhoneSettings = options.preservePhoneSettings !== false;
+    const preserveSessionMeta = options.preserveSessionMeta !== false;
+    const keepFiles = new Set();
+
+    if (preservePhoneSettings) {
+        keepFiles.add('phone-settings-profile.json');
+        keepFiles.add('phone-settings-credentials.json');
+        keepFiles.add('phone-settings-meta.json');
+    }
+
+    if (preserveSessionMeta) {
+        keepFiles.add('session-meta.json');
+    }
+
+    const sessionDir = getSessionStorageDir(normalizedPhone);
+    ensureDir(sessionDir);
+
+    let removed = 0;
+    try {
+        for (const entry of fs.readdirSync(sessionDir, { withFileTypes: true })) {
+            if (keepFiles.has(entry.name)) continue;
+            const targetPath = path.join(sessionDir, entry.name);
+            try {
+                if (entry.isDirectory()) {
+                    fs.rmSync(targetPath, { recursive: true, force: true });
+                } else {
+                    fs.unlinkSync(targetPath);
+                }
+                removed += 1;
+            } catch (_) {}
+        }
+    } catch (_) {}
+
+    const currentMeta = readLocalSessionMeta(normalizedPhone);
+    writeLocalSessionMeta(normalizedPhone, {
+        phone: normalizedPhone,
+        ownerId: String(options.ownerId || currentMeta?.ownerId || getPhoneOwner(normalizedPhone) || '').trim(),
+        registered: false,
+        lastConnectedAt: currentMeta?.lastConnectedAt || null
+    });
+
+    return { removed, kept: Array.from(keepFiles) };
+}
+
+async function purgeSessionData(phone, options = {}) {
     const normalized = normalizePhone(phone);
     if (!normalized) return;
+    const keepProfile = options.keepProfile !== false;
+    const preservedOwnerId = String(options.ownerId || getPhoneOwner(normalized) || '').trim();
     clearReconnectTimer(normalized);
     clearSessionSnapshotSyncState(normalized);
     clearPairingRequest(normalized);
@@ -7929,7 +8010,16 @@ async function purgeSessionData(phone) {
     reconnectAttempts.delete(normalized);
     clientActivity.delete(normalized);
     waClients.delete(normalized);
-    await deleteMongoSessionState(normalized);
+    await deleteMongoSessionState(normalized, {
+        preserveLocalIndex: keepProfile,
+        preservePhoneSettings: keepProfile,
+        preserveSessionMeta: keepProfile,
+        ownerId: preservedOwnerId
+    });
+    if (keepProfile) {
+        clearPhoneSettingsAuthForPhone(normalized);
+        return;
+    }
     removeLinkedNumber(normalized);
 }
 
@@ -8134,14 +8224,15 @@ function schedulePairingTimeout(phone, telegramUserId, sessionPath, sock) {
         try { sock.end?.(); } catch (_) {}
         try { await sock.logout?.(); } catch (_) {}
 
-        clearPhoneSettingsAuthForPhone(normalized);
-        await deleteMongoSessionState(normalized);
-        removeLinkedNumber(normalized);
+        await purgeSessionData(normalized, {
+            keepProfile: true,
+            ownerId: telegramUserId || existing.telegramUserId || getPhoneOwner(normalized) || ''
+        });
 
         await notifyTelegramUser(
             telegramUserId || existing.telegramUserId,
             `⏱️ انتهت مدة كود اقتران الرقم ${normalized} بعد 60 ثانية.
-الرجاء إرسال رقمك من جديد للحصول على كود جديد.`
+تم تنظيف ملفات الجلسة مع الاحتفاظ بإعدادات الرقم وملكيته، ويمكن طلب كود جديد في أي وقت.`
         );
 
         clearPairingRequest(normalized);
@@ -8266,8 +8357,10 @@ async function cleanupSession(phone) {
         waClients.delete(normalized);
     }
 
-    await deleteMongoSessionState(normalized);
-    removeLinkedNumber(normalized);
+    await purgeSessionData(normalized, {
+        keepProfile: true,
+        ownerId: getPhoneOwner(normalized) || ''
+    });
 }
 
 
@@ -9499,31 +9592,44 @@ async function startWhatsApp(phoneNumber, telegramCtx = null, ownerId = null, pa
                 clientActivity.delete(normalizedPhone);
                 clearSessionPingTimer(normalizedPhone);
 
+                const transientCryptoDisconnect = isTransientCryptoDisconnect(lastDisconnect);
                 const corruptedBootSession = bootRestore && shouldDiscardCorruptedBootSession(lastDisconnect);
                 const permanentDisconnect = isPermanentDisconnect(lastDisconnect);
-                const shouldReconnect = !permanentDisconnect && !corruptedBootSession;
+                const shouldReconnect = !permanentDisconnect && !corruptedBootSession && !transientCryptoDisconnect;
 
-                if (corruptedBootSession) {
-                    console.log(`⚠️ الجلسة تالفة للرقم ${normalizedPhone}، جاري حذفها لإعادة الربط النظيف...`);
+                if (corruptedBootSession || transientCryptoDisconnect) {
+                    console.log(`⚠️ تم اكتشاف جلسة تالفة/غير متزامنة للرقم ${normalizedPhone}، جاري تنظيف ملفات الجلسة وإعادة التشغيل...`);
                     const existingOwnerId = requestedOwnerId || getPhoneOwner(normalizedPhone);
-                    await purgeSessionData(normalizedPhone);
+                    await purgeSessionData(normalizedPhone, {
+                        keepProfile: true,
+                        ownerId: existingOwnerId || ''
+                    });
                     try {
-                        await notifyTelegramUser(existingOwnerId, `⚠️ تم اكتشاف جلسة تالفة للرقم ${normalizedPhone} أثناء الاستعادة التلقائية، لذلك حذفها البوت من ملفات المشروع وسيحتاج الرقم إلى ربط جديد فقط عند الضرورة.`);
+                        await notifyTelegramUser(existingOwnerId, `⚠️ تم اكتشاف خلل تشفير أو Bad MAC للرقم ${normalizedPhone}.
+🧹 تم تنظيف ملفات الجلسة التالفة مع الاحتفاظ بإعدادات الرقم وملكيته.
+🔁 سيحاول البوت تشغيل الرقم من جديد وإصدار كود ربط جديد تلقائياً إذا لزم الأمر.`);
                     } catch (error) {
                         console.error(`notifyTelegramUser Corrupted Session Error (${normalizedPhone}):`, error.message || error);
                     }
+                    scheduleReconnect(normalizedPhone, existingOwnerId || getPhoneOwner(normalizedPhone), 1500);
                     return;
                 }
 
                 if (permanentDisconnect) {
                     console.log(`Session Logged Out Or Invalidated: ${normalizedPhone}`);
                     const existingOwnerId = requestedOwnerId || getPhoneOwner(normalizedPhone);
-                    await purgeSessionData(normalizedPhone);
+                    await purgeSessionData(normalizedPhone, {
+                        keepProfile: true,
+                        ownerId: existingOwnerId || ''
+                    });
                     try {
-                        await notifyTelegramUser(existingOwnerId, `⚠️ خرج الرقم ${normalizedPhone} من واتساب أو تم حظره/إبطال الجلسة، لذلك حذفت الجلسة من البوت تلقائياً.`);
+                        await notifyTelegramUser(existingOwnerId, `⚠️ خرج الرقم ${normalizedPhone} من واتساب أو تم إبطال الجلسة.
+🧹 تم حذف ملفات الجلسة فقط مع الاحتفاظ بإعدادات الرقم وملكيته داخل المشروع.
+🔁 سيصدر البوت كود ربط جديد تلقائياً عند إعادة التشغيل.`);
                     } catch (error) {
                         console.error(`notifyTelegramUser Permanent Disconnect Error (${normalizedPhone}):`, error.message || error);
                     }
+                    scheduleReconnect(normalizedPhone, existingOwnerId || getPhoneOwner(normalizedPhone), 1500);
                     return;
                 }
 
@@ -9581,7 +9687,11 @@ async function initializeSessions() {
             }
             const preparation = await ensureSessionStateReady(session.sessionId);
             if (!preparation.ready) {
-                console.log(`⚠️ تعذر تشغيل جلسة ${session.sessionId} أثناء الإقلاع حالياً، سيتم الاحتفاظ بها للمحاولة لاحقاً.`);
+                console.log(`⚠️ جلسة ${session.sessionId} لا تحتوي على ملفات ربط صالحة حالياً، سيتم تشغيلها في وضع ربط جديد مع الاحتفاظ بإعداداتها.`);
+                await startWhatsApp(session.sessionId, null, session.ownerId || getPhoneOwner(session.sessionId), null, {
+                    autoRequestPairingCode: true,
+                    bootRestore: false
+                });
                 return;
             }
 
