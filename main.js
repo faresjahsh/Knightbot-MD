@@ -598,9 +598,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
         const message = messages[0];
         if (!message?.message) return;
 
-        // Handle autoread functionality
-        await handleAutoread(sock, message);
-
         // Store message for antidelete feature
         if (message.message) {
             storeMessage(sock, message);
@@ -617,6 +614,22 @@ async function handleMessages(sock, messageUpdate, printLog) {
         const isGroup = chatId.endsWith('@g.us');
         const senderIsSudo = await isSudo(senderId);
         const senderIsOwnerOrSudo = await isOwnerOrSudo(senderId, sock, chatId);
+
+        // Early PM blocker check: skip autoread for blocked PMs so single tick stays
+        let skipAutoRead = false;
+        if (!isGroup && !message.key.fromMe && !senderIsSudo) {
+            try {
+                const pmStateEarly = readPmBlockerState();
+                if (pmStateEarly.enabled) {
+                    skipAutoRead = true;
+                }
+            } catch (e) { }
+        }
+
+        // Handle autoread functionality (skip if PM blocker is active)
+        if (!skipAutoRead) {
+            await handleAutoread(sock, message);
+        }
         patchArabicOutgoingSock(sock);
 
         // Handle button responses
@@ -702,15 +715,36 @@ async function handleMessages(sock, messageUpdate, printLog) {
             await Antilink(message, sock);
         }
 
-        // PM blocker: block non-owner DMs when enabled (do not ban)
+        // PM blocker: forward DMs to owner instead of blocking (no ban, single tick stays)
         if (!isGroup && !message.key.fromMe && !senderIsSudo) {
             try {
                 const pmState = readPmBlockerState();
                 if (pmState.enabled) {
-                    // Inform user, delay, then block without banning globally
+                    // DO NOT read the message — leave a single tick (✓) at sender
+                    // DO NOT block the number — sender can still see the conversation
+                    // Forward the message content to the owner (linked number)
+                    const ownerJid = settings.ownerNumber + '@s.whatsapp.net';
+                    const senderPhone = chatId.split('@')[0];
+                    const senderName = message?.pushName || senderPhone;
+
+                    // Build forwarded text with sender info
+                    let forwardText = `📨 *رسالة خاصة جديدة*
+
+`; 
+                    forwardText += `👤 المرسل: ${senderName}\n`;
+                    forwardText += `📱 الرقم: ${senderPhone}\n`;
+                    forwardText += `💬 الرسالة: ${rawIncomingText || '(رسالة غير نصية)'}\n`;
+                    forwardText += `⏰ الوقت: ${new Date().toLocaleString('ar')}\n`;
+                    forwardText += `\n_للرد على المرسل استخدم الأمر: .رد ${senderPhone} <رسالتك>_`;
+
+                    try {
+                        await sock.sendMessage(ownerJid, { text: forwardText });
+                    } catch (fwdErr) {
+                        console.error('PM Blocker forward error:', fwdErr.message);
+                    }
+
+                    // Send the warning message to sender (single tick stays, no block)
                     await sock.sendMessage(chatId, { text: pmState.message || 'Private messages are blocked. Please contact the owner in groups only.' });
-                    await new Promise(r => setTimeout(r, 1500));
-                    try { await sock.updateBlockStatus(chatId, 'block'); } catch (e) { }
                     return;
                 }
             } catch (e) { }
@@ -805,6 +839,30 @@ async function handleMessages(sock, messageUpdate, printLog) {
         // Command handlers - Execute commands immediately without waiting for typing indicator
         // We'll show typing indicator after command execution if needed
         let commandExecuted = false;
+
+        // ─── PM Blocker reply command: .رد <number> <message> ───
+        if (userMessage.startsWith('.رد ')) {
+            if (!message.key.fromMe && !senderIsOwnerOrSudo) {
+                await sock.sendMessage(chatId, { text: '❌ هذا الأمر للمالك فقط!' }, { quoted: message });
+                return;
+            }
+            const replyParts = rawText.split(' '); // use rawText to preserve Arabic
+            // .رد <number> <message...>
+            const targetNumber = replyParts[1];
+            const replyMsg = replyParts.slice(2).join(' ').trim();
+            if (!targetNumber || !replyMsg) {
+                await sock.sendMessage(chatId, { text: 'الاستخدام: .رد <الرقم> <رسالتك>\nمثال: .رد 919876543210 مرحبا' }, { quoted: message });
+                return;
+            }
+            const targetJid = targetNumber.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+            try {
+                await sock.sendMessage(targetJid, { text: replyMsg });
+                await sock.sendMessage(chatId, { text: `✅ تم إرسال ردك إلى ${targetNumber}` }, { quoted: message });
+            } catch (replyErr) {
+                await sock.sendMessage(chatId, { text: `❌ فشل إرسال الرد: ${replyErr.message}` }, { quoted: message });
+            }
+            return;
+        }
 
         switch (true) {
             case userMessage === '.simage': {
