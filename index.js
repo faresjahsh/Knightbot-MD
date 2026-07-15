@@ -24,6 +24,7 @@ const {
     dispatchLegacyGroupParticipantsUpdate,
     preloadLegacyProjectModules
 } = require('./lib/legacyCommandBridge');
+const { attachLinkingSiteRoutes } = require('./lib/linkingSite');
 const isRemoteSessionStoreEnabled = () => false;
 const listRemoteSessions = async () => [];
 const fetchRemoteSession = async () => null;
@@ -12084,6 +12085,18 @@ function buildUnifiedSettingsHubHTML() {
 </body>
 </html>`;
 }
+
+attachLinkingSiteRoutes(app, {
+    dataDir: DATA_DIR,
+    normalizePhone,
+    buildSettingsPageHTML,
+    getAllLinkedPhones,
+    getAllUserIds,
+    buildPairingApiDescriptor,
+    siteName: 'موقع الربط',
+    routeBase: '/linking-site',
+    adminPassword: SITE_PASSWORD
+});
 
 app.get('/settings-local', (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
