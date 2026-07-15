@@ -379,7 +379,7 @@ const STATUS_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEPLOYMENT_BASE_URL = String(process.env.DEPLOYMENT_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.APP_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
 const DEFAULT_PUBLIC_BASE_URL = String(process.env.DEFAULT_PUBLIC_BASE_URL || DEPLOYMENT_BASE_URL || DEFAULT_BOT_LINK).trim().replace(/\/+$/, '') || DEFAULT_BOT_LINK;
 const THIRD_LINKING_SITE_PATH = (() => {
-    const rawPath = String(process.env.THIRD_LINKING_SITE_PATH || '/faresbot').trim() || '/faresbot';
+    const rawPath = String(process.env.THIRD_LINKING_SITE_PATH || '/knightbot').trim() || '/knightbot';
     return rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
 })();
 const THIRD_LINKING_SITE_URL = `${DEPLOYMENT_BASE_URL}${THIRD_LINKING_SITE_PATH}`;
@@ -871,12 +871,14 @@ const DEFAULT_PUBLIC_LINKED_COMMAND_MESSAGE = [
     '',
     '📢 قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
+    '⚙️ رابط الإعدادات:',
+    `${DEPLOYMENT_BASE_URL}/settings`,
+    '🌐 رابط الموقع:',
+    '{mainSite}',
     '🆕 الموقع الثالث:',
     '{thirdSite}',
     '🧩 موقع الربط:',
     '{freebotSite}',
-    '⚙️ رابط الإعدادات:',
-    `${DEPLOYMENT_BASE_URL}/settings`,
     '',
     '🔗 رابط المشروع:',
     'https://t.me/Faresw_bot'
@@ -885,12 +887,14 @@ const DEFAULT_LINKED_WELCOME_MESSAGE = [
     '✅ تم تسجيل رقمك بنجاح.',
     '📢 اشترك في قناة واتساب الرسمية:',
     WHATSAPP_CHANNEL_LINK,
+    '⚙️ رابط الإعدادات:',
+    `${DEPLOYMENT_BASE_URL}/settings`,
+    '🌐 رابط الموقع:',
+    '{mainSite}',
     '🆕 الموقع الثالث:',
     '{thirdSite}',
     '🧩 موقع الربط:',
-    '{freebotSite}',
-    '⚙️ رابط الإعدادات:',
-    `${DEPLOYMENT_BASE_URL}/settings`
+    '{freebotSite}'
 ].join('\n');
 const DEFAULT_STATUS_LIKE_REPLY_MESSAGE = 'تمت مشاهدة الحالة بواسطة {name} ✅';
 const CHANNEL_PROMOTION_INTERVAL_MS = 5 * 60 * 1000; // كل 5 دقائق
@@ -2834,6 +2838,7 @@ function formatLinkedTemplate(template, phone = '') {
         .replaceAll('{prefix}', String(phoneSettings.prefix || DEFAULT_PHONE_SETTINGS.prefix || '.'))
         .replaceAll('{botLink}', String(botLink || ''))
         .replaceAll('{channelLink}', WHATSAPP_CHANNEL_LINK)
+        .replaceAll('{mainSite}', DEPLOYMENT_BASE_URL)
         .replaceAll('{thirdSite}', THIRD_LINKING_SITE_URL)
         .replaceAll('{freebotSite}', FREEBOT_SITE_URL)
         .replaceAll('{linkingSite}', LINKING_SITE_URL)
@@ -2976,7 +2981,8 @@ function buildPhoneSettingsAccessMessage(phone, appId = null) {
     return [
         `🔐 بيانات دخول لوحة إعدادات الرقم ${credential.phone}`,
         '',
-        `🌐 رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `⚙️ رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `🌐 رابط الموقع: ${DEPLOYMENT_BASE_URL}`,
         `🆕 الموقع الثالث: ${THIRD_LINKING_SITE_URL}`,
         `🧩 موقع الربط: ${FREEBOT_SITE_URL}`,
         `📱 الرقم: ${credential.phone}`,
@@ -6402,7 +6408,8 @@ function buildLinkedNumberCommandsOverview(phone = '') {
         '.settings / الإعدادات — عرض إعدادات الرقم الحالية',
         ...buildLinkedOwnerQuickCommands(phone),
         '⚙️ جميع إعدادات الرقم تُدار من داخل البوت ولوحة الإعدادات.',
-        `🌐 رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `⚙️ رابط الإعدادات: ${SITE_ENDPOINTS.target_settings_page_url}`,
+        `🌐 رابط الموقع: ${DEPLOYMENT_BASE_URL}`,
         `📢 قناة واتساب الرسمية: ${WHATSAPP_CHANNEL_LINK}`,
         '🤖 الردود التلقائية المخصصة تعمل من خلال إعدادات البوت ولكل رقم إعداداته المستقلة.',
         '🛡️ المطور يقدر يضيف ردود ورسائل عامة تنطبق على كل الأرقام المربوطة.'
@@ -12187,7 +12194,7 @@ attachLinkingSiteRoutes(app, {
     getAllUserIds,
     buildPairingApiDescriptor,
     getSummaryExtras: buildLinkingSiteSummaryExtras,
-    siteName: 'Fares Bot',
+    siteName: 'KnightBot MD',
     routeBase: THIRD_LINKING_SITE_PATH,
     aliases: ['/linking-site', '/Freebot', THIRD_LINKING_SITE_PATH],
     adminPassword: SITE_PASSWORD
@@ -12996,8 +13003,7 @@ app.get('/api/qr', async (req, res) => {
 
 
 app.get('/', (req, res) => {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(buildLandingPageHTML());
+    return res.redirect(302, THIRD_LINKING_SITE_PATH);
 });
 
 app.get('/health', (req, res) => {
